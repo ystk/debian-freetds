@@ -7533,7 +7533,7 @@ EOF
       hardcode_shlibpath_var=no
       ;;
 
-  linux*)
+  linux* | k*bsd*-gnu | gnu*)
     if $LD --help 2>&1 | grep ': supported targets:.* elf' > /dev/null; then
       tmp_addflag=
       case $CC,$host_cpu in

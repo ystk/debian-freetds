@@ -1,0 +1,2 @@
+usr/share/freetds/freetds.conf usr/share/doc/freetds-common/examples/freetds.conf
+usr/share/tdsodbc/odbcinst.ini usr/share/doc/freetds-common/examples/odbcinst.ini

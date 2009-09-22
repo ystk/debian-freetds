@@ -34,6 +34,10 @@
 #include <stdlib.h>
 #endif /* HAVE_STDLIB_H */
 
+#ifdef HAVE_LANGINFO_H
+#include <langinfo.h>
+#endif
+
 #include "tds.h"
 #include "tds_configs.h"
 #include "replacements.h"
@@ -68,12 +72,21 @@ tds_get_locale(void)
 	if (in) {
 		tds_read_conf_section(in, "default", tds_parse_locale, locale);
 
+	}
+#ifdef HAVE_NL_LANGINFO
+	if ((s = nl_langinfo(CODESET))) {
+		free(locale->server_charset);
+		free(locale->client_charset);
+		locale->client_charset = strdup(s);
+		locale->server_charset = strdup(s);
+	}
+#endif
+	if (in) {
 		s = getenv("LANG");
 		if (s && s[0]) {
 			int found;
 			char buf[128];
 			const char *strip = "@._";
-			const char *charset = NULL;
 
 			/* do not change environment !!! */
 			tds_strlcpy(buf, s, sizeof(buf));
@@ -96,21 +109,15 @@ tds_get_locale(void)
 				if (!s)
 					continue;
 				*s = 0;
-				if (*strip == '.')
-					charset = s+1;
 				rewind(in);
 				found = tds_read_conf_section(in, buf, tds_parse_locale, locale);
 			}
 
-			/* charset specified in LANG ?? */
-			if (charset) {
-				free(locale->client_charset);
-				locale->client_charset = strdup(charset);
-			}
 		}
 
 		fclose(in);
 	}
+
 	return locale;
 }
 
@@ -122,6 +129,9 @@ tds_parse_locale(const char *option, const char *value, void *param)
 	if (!strcmp(option, TDS_STR_CHARSET)) {
 		free(locale->server_charset);
 		locale->server_charset = strdup(value);
+	} else if (!strcmp(option, TDS_STR_CLCHARSET)) {
+		free(locale->client_charset);
+		locale->client_charset = strdup(value);
 	} else if (!strcmp(option, TDS_STR_LANGUAGE)) {
 		free(locale->language);
 		locale->language = strdup(value);

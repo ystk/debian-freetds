@@ -757,6 +757,9 @@ tds_alloc_connection(TDSLOCALE * locale)
 		if (locale->server_charset)
 			if (!tds_dstr_copy(&connection->server_charset, locale->server_charset))
 				goto Cleanup;
+		if (locale->client_charset)
+			if (!tds_dstr_copy(&connection->client_charset,locale->client_charset))
+				goto Cleanup;
 	}
 	if (tds_dstr_isempty(&connection->language)) {
 		if (!tds_dstr_copy(&connection->language, TDS_DEF_LANG))
