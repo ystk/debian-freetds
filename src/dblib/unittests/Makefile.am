@@ -1,4 +1,4 @@
-# $Id: Makefile.am,v 1.43 2007/12/03 09:20:10 freddy77 Exp $
+# $Id: Makefile.am,v 1.50 2010/07/31 08:05:59 freddy77 Exp $
 TESTS		=	t0001$(EXEEXT) t0002$(EXEEXT) t0003$(EXEEXT)\
 			t0004$(EXEEXT) t0005$(EXEEXT) t0006$(EXEEXT)\
 			t0007$(EXEEXT) t0008$(EXEEXT) t0009$(EXEEXT)\
@@ -10,10 +10,17 @@ TESTS		=	t0001$(EXEEXT) t0002$(EXEEXT) t0003$(EXEEXT)\
 			bcp$(EXEEXT) thread$(EXEEXT) text_buffer$(EXEEXT)\
 			done_handling$(EXEEXT) timeout$(EXEEXT) \
 			hang$(EXEEXT) null$(EXEEXT) null2$(EXEEXT) \
-			setnull$(EXEEXT)
+			setnull$(EXEEXT) numeric$(EXEEXT)
 check_PROGRAMS	=	$(TESTS)
 
-t0001_SOURCES	=	t0001.c common.c common.h
+SQL_DIST = 	bcp.sql dbmorecmds.sql done_handling.sql rpc.sql \
+		t0001.sql t0002.sql t0003.sql t0004.sql t0005.sql t0006.sql t0007.sql t0009.sql \
+		t0011.sql t0012.sql t0013.sql t0014.sql t0015.sql t0016.sql t0017.sql t0018.sql \
+		t0020.sql t0022.sql t0023.sql text_buffer.sql timeout.sql numeric.sql
+
+noinst_SCRIPTS	= $(SQL_DIST)
+
+t0001_SOURCES	=	t0001.c common.c common.h t0001.sql
 t0002_SOURCES	=	t0002.c common.c common.h
 t0003_SOURCES	=	t0003.c common.c common.h
 t0004_SOURCES	=	t0004.c common.c common.h
@@ -46,15 +53,16 @@ hang_SOURCES	=	hang.c common.c common.h
 null_SOURCES	=	null.c common.c common.h
 null2_SOURCES	=	null2.c common.c common.h
 setnull_SOURCES	=	setnull.c common.c common.h
+numeric_SOURCES =	numeric.c common.c common.h
 
 AM_CPPFLAGS	= 	-DFREETDS_SRCDIR=\"$(srcdir)\" -I$(top_srcdir)/include
 if MINGW32
 AM_LDFLAGS	=	-no-fast-install
 else
-AM_LDFLAGS	=	-no-install
+AM_LDFLAGS	=	-no-install -L../.libs -R $(abs_builddir)/../.libs
 endif
-LIBS		=	../libsybdb.la ../../replacements/libreplacements.la @NETWORK_LIBS@
-EXTRA_DIST	=	t0016.in t0017.in t0017.in.be data.bin $(EXTRA_DIST_WIN32)
+LIBS		=	../libsybdb.la ../../replacements/libreplacements.la $(LIBICONV) @NETWORK_LIBS@
+EXTRA_DIST	=	t0016.in t0017.in t0017.in.be data.bin $(EXTRA_DIST_WIN32) $(SQL_DIST)
 CLEANFILES	=	tdsdump.out t0013.out t0014.out t0016.out \
 				t0016.err t0017.err t0017.out
 
@@ -71,3 +79,5 @@ clean-local:
 EXTRA_DIST_WIN32 = vc6 dblib.dsw dblib.mak
 endif
 
+$(SQL_DIST): 
+	ln -s $(srcdir)/$@ .

@@ -2,7 +2,7 @@
 #ifndef COMMON_h
 #define COMMON_h
 
-static char rcsid_common_h[] = "$Id: common.h,v 1.14 2007/12/20 21:57:35 freddy77 Exp $";
+static char rcsid_common_h[] = "$Id: common.h,v 1.20 2009/09/01 05:47:31 freddy77 Exp $";
 static void *no_unused_common_h_warn[] = { rcsid_common_h, no_unused_common_h_warn };
 
 #if HAVE_CONFIG_H
@@ -23,10 +23,23 @@ static void *no_unused_common_h_warn[] = { rcsid_common_h, no_unused_common_h_wa
 
 #ifdef DBNTWIN32
 #include <windows.h>
+/* fix MingW missing declare */
+#ifndef _WINDOWS_
+#define _WINDOWS_ 1
+#endif
 #endif
 
 #include <sqlfront.h>
 #include <sqldb.h>
+
+#if !defined(FREETDS_SRCDIR)
+#define FREETDS_SRCDIR "../../../.."
+#endif
+
+#if !defined(EXIT_FAILURE)
+#define EXIT_FAILURE 1
+#define EXIT_SUCCESS 0
+#endif
 
 #ifdef DBNTWIN32
 /*
@@ -51,6 +64,7 @@ static void *no_unused_common_h_warn[] = { rcsid_common_h, no_unused_common_h_wa
 #define SYBTEXT     SQLTEXT
 #define SYBBINARY   SQLBINARY
 #define SYBIMAGE    SQLIMAGE
+#define SYBDECIMAL  SQLDECIMAL
 
 #define dberrhandle(h) dberrhandle((DBERRHANDLE_PROC) h)
 #define dbmsghandle(h) dbmsghandle((DBMSGHANDLE_PROC) h)
@@ -76,6 +90,9 @@ void free_bread_crumb(void);
 int syb_msg_handler(DBPROCESS * dbproc,
 		    DBINT msgno, int msgstate, int severity, char *msgtext, char *srvname, char *procname, int line);
 int syb_err_handler(DBPROCESS * dbproc, int severity, int dberr, int oserr, char *dberrstr, char *oserrstr);
+
+RETCODE sql_cmd(DBPROCESS *dbproc);
+RETCODE sql_rewind(void);
 
 #define int2ptr(i) ((void*)(((char*)0)+(i)))
 #define ptr2int(p) ((int)(((char*)(p))-((char*)0)))

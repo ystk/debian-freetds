@@ -57,6 +57,7 @@ libsybdb.so.5 libsybdb5 #MINVER#
  dbdatecrack@Base 0.63
  dbdatlen@Base 0.63
  dbdead@Base 0.63
+ dbiscount@Base 0.91
  dberrhandle@Base 0.63
  dbexit@Base 0.63
  dbfcmd@Base 0.63

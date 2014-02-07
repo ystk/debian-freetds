@@ -20,6 +20,10 @@
 #ifndef _tdsconvert_h_
 #define _tdsconvert_h_
 
+#if defined(__GNUC__) && __GNUC__ >= 4 && !defined(__MINGW32__)
+#pragma GCC visibility push(hidden)
+#endif
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -28,7 +32,7 @@ extern "C"
 #endif
 #endif
 
-/* $Id: tdsconvert.h,v 1.23 2006/04/15 08:18:44 freddy77 Exp $ */
+/* $Id: tdsconvert.h,v 1.26 2010/01/25 23:05:58 freddy77 Exp $ */
 
 typedef union conv_result
 {
@@ -85,6 +89,7 @@ struct tds_time
 unsigned char tds_willconvert(int srctype, int desttype);
 
 TDS_INT tds_get_null_type(int srctype);
+TDS_INT tds_char2hex(TDS_CHAR *dest, TDS_UINT destlen, const TDS_CHAR * src, TDS_UINT srclen);
 TDS_INT tds_convert(const TDSCONTEXT * context, int srctype, const TDS_CHAR * src, TDS_UINT srclen, int desttype, CONV_RESULT * cr);
 
 size_t tds_strftime(char *buf, size_t maxsize, const char *format, const TDSDATEREC * timeptr);
@@ -94,6 +99,10 @@ size_t tds_strftime(char *buf, size_t maxsize, const char *format, const TDSDATE
 {
 #endif
 }
+#endif
+
+#if defined(__GNUC__) && __GNUC__ >= 4 && !defined(__MINGW32__)
+#pragma GCC visibility pop
 #endif
 
 #endif /* _tdsconvert_h_ */

@@ -2,21 +2,18 @@
 
 /* Test if SQLExecDirect return error if a error in row is returned */
 
-static char software_version[] = "$Id: lang_error.c,v 1.2 2003/11/08 18:00:33 freddy77 Exp $";
+static char software_version[] = "$Id: lang_error.c,v 1.6 2010/07/05 09:20:33 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 int
 main(int argc, char *argv[])
 {
-	Connect();
+	odbc_connect();
 
 	/* issue print statement and test message returned */
-	if (CommandWithResult(Statement, "SELECT DATEADD(dd,-100000,getdate())") != SQL_ERROR) {
-		printf("SQLExecDirect should return SQL_ERROR\n");
-		return 1;
-	}
+	odbc_command2("SELECT DATEADD(dd,-100000,getdate())", "E");
 
-	Disconnect();
+	odbc_disconnect();
 
 	printf("Done.\n");
 	return 0;

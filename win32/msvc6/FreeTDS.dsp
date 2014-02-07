@@ -109,7 +109,7 @@ SOURCE=..\..\src\odbc\error.c
 # End Source File
 # Begin Source File
 
-SOURCE=..\FreeTDS.def
+SOURCE=..\FreeTDS_w.def
 # End Source File
 # Begin Source File
 
@@ -138,6 +138,10 @@ SOURCE=..\..\src\odbc\prepare_query.c
 # Begin Source File
 
 SOURCE=..\..\src\odbc\sql2tds.c
+# End Source File
+# Begin Source File
+
+SOURCE=..\..\src\odbc\sqlwchar.c
 # End Source File
 # Begin Source File
 

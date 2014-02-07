@@ -1,12 +1,8 @@
 #!/usr/bin/make -f
 
-CFLAGS = -g -Wall
+export DEB_CFLAGS_MAINT_APPEND = -Wall -DDBLIB_UNIMPLEMENTED=1
 
-ifneq (,$(findstring noopt,$(DEB_BUILD_OPTIONS)))
-  CFLAGS += -O0
-else
-  CFLAGS += -O2
-endif
+DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 
 %:
 	dh $@
@@ -24,15 +20,15 @@ autotools:
 override_dh_auto_configure: autotools
 	dh_auto_configure -- --with-gnu-ld --with-tdsver=4.2 \
 		--with-unixodbc=/usr --sysconfdir=/etc/freetds \
-		--enable-sybase-compat \
+		--enable-sybase-compat --with-gnutls \
 		CPPFLAGS=-D_REENTRANT CFLAGS="${CFLAGS}"
 
 override_dh_auto_install:
 	dh_auto_install
-	mkdir -p $(CURDIR)/debian/tmp/usr/lib/odbc
-	mv $(CURDIR)/debian/tmp/usr/lib/libtdsodbc.so.0.0.0 \
-	   $(CURDIR)/debian/tmp/usr/lib/odbc/libtdsodbc.so
-	rm -f $(CURDIR)/debian/tmp/usr/lib/libtdsodbc*
+	mkdir -p $(CURDIR)/debian/tmp/usr/lib/$(DEB_HOST_MULTIARCH)/odbc
+	mv $(CURDIR)/debian/tmp/usr/lib/$(DEB_HOST_MULTIARCH)/libtdsodbc.so.0.0.0 \
+	   $(CURDIR)/debian/tmp/usr/lib/$(DEB_HOST_MULTIARCH)/odbc/libtdsodbc.so
+	rm -f $(CURDIR)/debian/tmp/usr/lib/$(DEB_HOST_MULTIARCH)/libtdsodbc*
 
 override_dh_makeshlibs:
 	dh_makeshlibs -Xtdsodbc -V

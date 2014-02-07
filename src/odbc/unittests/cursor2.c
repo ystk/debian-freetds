@@ -1,46 +1,48 @@
 #include "common.h"
 
-/* Test cursor do not give error for statement that do not return rows  */
+/*
+ * 1) Test cursor do not give error for statement that do not return rows
+ * 2) Test cursor returns results on language RPCs
+ */
 
-static char software_version[] = "$Id: cursor2.c,v 1.3 2007/04/20 13:27:14 freddy77 Exp $";
+static char software_version[] = "$Id: cursor2.c,v 1.11 2010/07/22 14:24:14 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
-
-#define CHK(func,params) \
-	if (func params != SQL_SUCCESS) \
-		ODBC_REPORT_ERROR(#func)
 
 int
 main(int argc, char *argv[])
 {
 	unsigned char sqlstate[6];
 	unsigned char msg[256];
-	SQLRETURN retcode;
 
-	Connect();
+	odbc_connect();
+	odbc_check_cursor();
 
-	Command(Statement, "CREATE TABLE #cursor2_test (i INT)");
+	odbc_command("CREATE TABLE #cursor2_test (i INT)");
 
-	retcode = SQLSetConnectAttr(Connection, SQL_ATTR_CURSOR_TYPE,  (SQLPOINTER) SQL_CURSOR_DYNAMIC, SQL_IS_INTEGER);
-	if (retcode != SQL_SUCCESS) {
-		CHK(SQLGetDiagRec, (SQL_HANDLE_DBC, Connection, 1, sqlstate, NULL, (SQLCHAR *) msg, sizeof(msg), NULL));
-		sqlstate[5] = 0;
-		if (strcmp((const char*) sqlstate, "S1092") == 0) {
-			printf("Your connection seems to not support cursors, probably you are using wrong protocol version or Sybase\n");
-			Disconnect();
-			exit(0);
-		}
-		ODBC_REPORT_ERROR("SQLSetConnectAttr");
-	}
-
-	ResetStatement();
+	odbc_reset_statement();
+	CHKSetStmtAttr(SQL_ATTR_CURSOR_TYPE, (SQLPOINTER) SQL_CURSOR_DYNAMIC, SQL_IS_INTEGER, "S");
 
 	/* this should not fail or return warnings */
-	Command(Statement, "DROP TABLE #cursor2_test");
+	odbc_command("DROP TABLE #cursor2_test");
 
-	if (SQLGetDiagRec(SQL_HANDLE_STMT, Statement, 1, sqlstate, NULL, msg, sizeof(msg), NULL) != SQL_NO_DATA)
-		ODBC_REPORT_ERROR("no warning expected");
+	CHKGetDiagRec(SQL_HANDLE_STMT, odbc_stmt, 1, sqlstate, NULL, msg, sizeof(msg), NULL, "No");
 
-	Disconnect();
+
+	odbc_reset_statement();
+	odbc_command_with_result(odbc_stmt, "if object_id('sp_test') is not null drop proc sp_test");
+	odbc_command("create proc sp_test @name varchar(30) as select 0 as pippo select 1 as 'test', @name as 'nome'");
+
+	odbc_reset_statement();
+	CHKSetStmtAttr(SQL_ATTR_CURSOR_TYPE, (SQLPOINTER) SQL_CURSOR_STATIC, SQL_IS_INTEGER, "S");
+
+	odbc_command(" exec sp_test 'ciao'");
+
+	CHKFetch("S");
+
+	odbc_reset_statement();
+	odbc_command("drop proc sp_test");
+
+	odbc_disconnect();
 	
 	return 0;
 }

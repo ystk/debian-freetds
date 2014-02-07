@@ -21,8 +21,8 @@
 #include <config.h>
 #endif
 
-#include "tds.h"
-#include "sybdb.h"
+#include <tds.h>
+#include <sybdb.h>
 
 #ifdef DMALLOC
 #include <dmalloc.h>
@@ -32,13 +32,17 @@
 #undef dbopen
 #endif
 
-TDS_RCSID(var, "$Id: dbopen.c,v 1.11 2007/09/20 15:32:54 freddy77 Exp $");
+TDS_RCSID(var, "$Id: dbopen.c,v 1.14 2010/05/10 15:10:47 freddy77 Exp $");
 
+/**
+ * Normally not used. 
+ * The function is linked in only if the --enable-sybase-compat configure option is used.  
+ * Cf. sybdb.h dbopen() macros, and dbdatecrack(). 
+ */
 DBPROCESS *
 dbopen(LOGINREC * login, const char *server)
 {
-	/* default it's platform specific */
-#if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(DOS32X)
+#if MSDBLIB
 	return tdsdbopen(login, server, 1);
 #else
 	return tdsdbopen(login, server, 0);

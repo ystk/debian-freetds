@@ -5,21 +5,16 @@
 
 #include "common.h"
 
-
-static char software_version[] = "$Id: t0007.c,v 1.17 2007/12/04 02:06:38 jklowden Exp $";
+static char software_version[] = "$Id: t0007.c,v 1.23 2010/12/30 18:54:08 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
-
-
 
 static void
 create_tables(DBPROCESS * dbproc, int rows_to_add)
 {
 	int i;
-	char cmd[1024];
-
 
 	fprintf(stdout, "creating table\n");
-	dbcmd(dbproc, "create table #dblib0007 (i int not null, s char(12) not null)");
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	while (dbresults(dbproc) != NO_MORE_RESULTS) {
 		/* nop */
@@ -27,24 +22,21 @@ create_tables(DBPROCESS * dbproc, int rows_to_add)
 
 	fprintf(stdout, "insert\n");
 	for (i = 1; i < rows_to_add; i++) {
-		sprintf(cmd, "insert into #dblib0007 values (%d, 'row %07d')", i, i);
-		fprintf(stdout, "%s\n", cmd);
-		dbcmd(dbproc, cmd);
+		sql_cmd(dbproc);
 		dbsqlexec(dbproc);
 		while (dbresults(dbproc) != NO_MORE_RESULTS) {
 			/* nop */
 		}
 	}
-}				/* create_tables()  */
+}
 
 
 static int
-start_query(DBPROCESS * dbproc, const char *cmd)
+start_query(DBPROCESS * dbproc)
 {
 	int i;
 
-	fprintf(stdout, "%s\n", cmd);
-	if (SUCCEED != dbcmd(dbproc, cmd)) {
+	if (SUCCEED != sql_cmd(dbproc)) {
 		return 0;
 	}
 	if (SUCCEED != dbsqlexec(dbproc)) {
@@ -60,11 +52,11 @@ start_query(DBPROCESS * dbproc, const char *cmd)
 
 	for (i = 1; i <= dbnumcols(dbproc); i++) {
 		add_bread_crumb();
-		printf("col %d is %s\n", i, dbcolname(dbproc, i));
+		printf("col %d is named \"%s\"\n", i, dbcolname(dbproc, i));
 		add_bread_crumb();
 	}
 	return 1;
-}				/* start_query()  */
+}
 
 int
 main(int argc, char **argv)
@@ -74,6 +66,8 @@ main(int argc, char **argv)
 	int i;
 	char teststr[1024];
 	DBINT testint;
+	DBVARYBIN  testvbin;
+	DBVARYCHAR testvstr;
 	int failed = 0;
 	int expected_error;
 
@@ -81,7 +75,7 @@ main(int argc, char **argv)
 
 	read_login_info(argc, argv);
 
-	fprintf(stdout, "Start\n");
+	fprintf(stdout, "Starting %s\n", argv[0]);
 	add_bread_crumb();
 
 	dbinit();
@@ -112,7 +106,7 @@ main(int argc, char **argv)
 
 	create_tables(dbproc, 10);
 
-	if (!start_query(dbproc, "select * from #dblib0007 where i<=5 order by i")) {
+	if (!start_query(dbproc)) {
 		fprintf(stderr, "%s:%d: start_query failed\n", __FILE__, __LINE__);
 		failed = 1;
 	}
@@ -126,7 +120,7 @@ main(int argc, char **argv)
 	add_bread_crumb();
 
 	for (i = 1; i <= 2; i++) {
-	char expected[1024];
+		char expected[1024];
 
 		sprintf(expected, "row %07d", i);
 
@@ -162,16 +156,67 @@ main(int argc, char **argv)
 	expected_error = 20019;
 	dbsetuserdata(dbproc, (BYTE*) &expected_error);
 
-	if (start_query(dbproc, "select * from #dblib0007 where i>=5 order by i")) {
+	if (start_query(dbproc)) {
 		fprintf(stderr, "%s:%d: start_query should have failed but didn't\n", __FILE__, __LINE__);
 		failed = 1;
 	}
 
 	add_bread_crumb();
+	dbcancel(dbproc);
+	
+	/* 
+	 * Test Binary binding
+	 */
+	if (!start_query(dbproc)) {
+		fprintf(stderr, "%s:%d: start_query failed\n", __FILE__, __LINE__);
+		failed = 1;
+	}
+
+	dbbind(dbproc, 1, VARYBINBIND, sizeof(testvbin), (BYTE *) &testvbin);
+	dbbind(dbproc, 2, VARYCHARBIND, sizeof(testvstr), (BYTE *) &testvstr);
++	dbbind(dbproc, 3, BINARYBIND, sizeof(testint), (BYTE *) &testint);
+
+	for (i = 1; i <= 2; i++) {
+		char expected[1024];
+
+		sprintf(expected, "row %07d ", i);
+
+		testint = -1;
+		memset(&testvbin, '*', sizeof(testvbin));
+		memset(&testvstr, '*', sizeof(testvstr));
+
+		if (REG_ROW != dbnextrow(dbproc)) {
+			fprintf(stderr, "Failed.  Expected a row\n");
+			abort();
+		}
+		if (testint != i) {
+			fprintf(stderr, "Failed, line %d.  Expected i to be %d, was %d (0x%x)\n", __LINE__, i, (int) testint, (int) testint);
+			abort();
+		}
+		if (testvbin.len != sizeof(testint)) {
+			fprintf(stderr, "Failed, line %d.  Expected bin lenght to be %d, was %d\n", __LINE__, (int) sizeof(testint), (int) testvbin.len);
+			abort();
+		}
+		testint = *((DBINT*) testvbin.array);
+		if (testint != i) {
+			fprintf(stderr, "Failed, line %d.  Expected i to be %d, was %d (0x%x)\n", __LINE__, i, (int) testint, (int) testint);
+			abort();
+		}
+		if (testvstr.len != strlen(expected) || 0 != strncmp(testvstr.str, expected, strlen(expected))) {
+			fprintf(stdout, "Failed, line %d.  Expected s to be |%s|, was |%s|\n", __LINE__, expected, testvstr.str);
+			abort();
+		}
+		testvstr.str[testvstr.len] = 0;
+		printf("Read a row of data -> %d %s\n", (int) testint, testvstr.str);
+	}
+
+
+
+	add_bread_crumb();
 	dbexit();
 	add_bread_crumb();
 
-	fprintf(stdout, "dblib %s on %s\n", (failed ? "failed!" : "okay"), __FILE__);
+	fprintf(stdout, "%s %s\n", __FILE__, (failed ? "failed!" : "OK"));
 	free_bread_crumb();
 	return failed ? 1 : 0;
 }

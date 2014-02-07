@@ -1,5 +1,5 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
- * Copyright (C) 2003, 2004, 2005 Frediano Ziglio
+ * Copyright (C) 2003-2011 Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -35,12 +35,7 @@
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: data.c,v 1.18 2007/06/21 07:21:21 freddy77 Exp $");
-
-#if !ENABLE_EXTRA_CHECKS
-static int tds_get_cardinal_type(int datatype);
-static int tds_get_varint_size(TDSSOCKET * tds, int datatype);
-#endif
+TDS_RCSID(var, "$Id: data.c,v 1.28.2.1 2011/04/22 14:14:16 freddy77 Exp $");
 
 /**
  * Set type of column initializing all dependency 
@@ -52,7 +47,7 @@ tds_set_column_type(TDSSOCKET * tds, TDSCOLUMN * curcol, int type)
 {
 	/* set type */
 	curcol->on_server.column_type = type;
-	curcol->column_type = tds_get_cardinal_type(type);
+	curcol->column_type = tds_get_cardinal_type(type, curcol->column_usertype);
 
 	/* set size */
 	curcol->column_cur_size = -1;
@@ -89,6 +84,9 @@ tds_set_param_type(TDSSOCKET * tds, TDSCOLUMN * curcol, TDS_SERVER_TYPE type)
 		default:
 			break;
 		}
+	} else if (IS_TDS50(tds)) {
+		if (type == SYBINT8)
+			type = SYB5INT8;
 	}
 	tds_set_column_type(tds, curcol, type);
 
@@ -133,16 +131,31 @@ tds_set_param_type(TDSSOCKET * tds, TDSCOLUMN * curcol, TDS_SERVER_TYPE type)
 		curcol->column_varint_size = 1;
 		curcol->column_cur_size = -1;
 		break;
+	case SYBNTEXT:
+		if (IS_TDS72_PLUS(tds)) {
+			curcol->column_varint_size = 8;
+			curcol->on_server.column_type = XSYBNVARCHAR;
+		}
+		break;
+	case SYBTEXT:
+		if (IS_TDS72_PLUS(tds)) {
+			curcol->column_varint_size = 8;
+			curcol->on_server.column_type = XSYBVARCHAR;
+		}
+		break;
+	case SYBIMAGE:
+		if (IS_TDS72_PLUS(tds)) {
+			curcol->column_varint_size = 8;
+			curcol->on_server.column_type = XSYBVARBINARY;
+		}
+		break;
 	default:
 		break;
 	}
 }
 
-#if !ENABLE_EXTRA_CHECKS
-static
-#endif
 int
-tds_get_cardinal_type(int datatype)
+tds_get_cardinal_type(int datatype, int usertype)
 {
 	switch (datatype) {
 	case XSYBVARBINARY:
@@ -159,65 +172,88 @@ tds_get_cardinal_type(int datatype)
 		return SYBCHAR;
 	case SYB5INT8:
 		return SYBINT8;
+	case SYBLONGBINARY:
+		switch (usertype) {
+		case USER_UNICHAR_TYPE:
+		case USER_UNIVARCHAR_TYPE:
+			return SYBTEXT;
+		}
+		break;
 	}
 	return datatype;
 }
 
-/**
- * tds_get_varint_size() returns the size of a variable length integer
- * returned in a TDS 7.0 result string
- */
-#if !ENABLE_EXTRA_CHECKS
-static
-#endif
-int
-tds_get_varint_size(TDSSOCKET * tds, int datatype)
+TDS_INT
+tds_data_get_info(TDSSOCKET *tds, TDSCOLUMN *col)
 {
-	switch (datatype) {
-	case SYBTEXT:
-	case SYBNTEXT:
-	case SYBIMAGE:
-		return 4;
-	case SYBVOID:
-	case SYBINT1:
-	case SYBBIT:
-	case SYBINT2:
-	case SYBINT4:
-	case SYBINT8:
-	case SYBDATETIME4:
-	case SYBREAL:
-	case SYBMONEY:
-	case SYBDATETIME:
-	case SYBFLT8:
-	case SYBMONEY4:
-	case SYBSINT1:
-	case SYBUINT2:
-	case SYBUINT4:
-	case SYBUINT8:
-		return 0;
+	switch (col->column_varint_size) {
+	case 8:
+		col->column_size = 0x7ffffffflu;
+		break;
+	case 5:
+	case 4:
+		col->column_size = tds_get_int(tds);
+		break;
+	case 2:
+		/* assure > 0 */
+		col->column_size = tds_get_smallint(tds);
+		/* under TDS9 this means ?var???(MAX) */
+		if (col->column_size < 0 && IS_TDS72_PLUS(tds)) {
+			col->column_size = 0x3ffffffflu;
+			col->column_varint_size = 8;
+		}
+		break;
+	case 1:
+		col->column_size = tds_get_byte(tds);
+		break;
+	case 0:
+		col->column_size = tds_get_size_by_type(col->column_type);
+		break;
 	}
 
-	if (IS_TDS7_PLUS(tds)) {
-		switch (datatype) {
-		/* TODO support this strange type */
-		case SYBVARIANT:
-			return 4;
-		case XSYBCHAR:
-		case XSYBNCHAR:
-		case XSYBNVARCHAR:
-		case XSYBVARCHAR:
-		case XSYBBINARY:
-		case XSYBVARBINARY:
-			return 2;
+	/* numeric and decimal have extra info */
+	if (is_numeric_type(col->column_type)) {
+		col->column_prec = tds_get_byte(tds);        /* precision */
+		col->column_scale = tds_get_byte(tds);       /* scale */
+		/* FIXME check prec/scale, don't let server crash us */
+	}
+
+	if (IS_TDS71_PLUS(tds) && is_collate_type(col->on_server.column_type)) {
+		/* based on true type as sent by server */
+		/*
+		 * first 2 bytes are windows code (such as 0x409 for english)
+		 * other 2 bytes ???
+		 * last bytes is id in syscharsets
+		 */
+		tds_get_n(tds, col->column_collation, 5);
+		col->char_conv =
+			tds_iconv_from_collate(tds, col->column_collation);
+	}
+
+	/* Only read table_name for blob columns (eg. not for SYBLONGBINARY) */
+	if (is_blob_type(col->on_server.column_type)) {
+		/* discard this additional byte */
+		if (IS_TDS72_PLUS(tds)) {
+			unsigned char num_parts = tds_get_byte(tds);
+			/* TODO do not discard first ones */
+			for (; num_parts; --num_parts) {
+				col->table_namelen =
+				tds_get_string(tds, tds_get_smallint(tds), col->table_name, sizeof(col->table_name) - 1);
+			}
+		} else {
+			col->table_namelen =
+				tds_get_string(tds, tds_get_smallint(tds), col->table_name, sizeof(col->table_name) - 1);
 		}
-	} else if (IS_TDS50(tds)) {
-		switch (datatype) {
-		case SYBLONGBINARY:
-		case SYBLONGCHAR:
-			return 5;
-		case SYB5INT8:
-			return 0;
+	} else if (IS_TDS72_PLUS(tds) && col->on_server.column_type == SYBMSXML) {
+		unsigned char has_schema = tds_get_byte(tds);
+		if (has_schema) {
+			/* discard schema informations */
+			tds_get_string(tds, tds_get_byte(tds), NULL, 0);        /* dbname */
+			tds_get_string(tds, tds_get_byte(tds), NULL, 0);        /* schema owner */
+			tds_get_string(tds, tds_get_smallint(tds), NULL, 0);    /* schema collection */
 		}
 	}
-	return 1;
+	return TDS_SUCCEED;
 }
+
+#include "tds_types.h"

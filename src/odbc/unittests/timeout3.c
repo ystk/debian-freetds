@@ -40,7 +40,7 @@
 	test connection timeout
 */
 
-static char software_version[] = "$Id: timeout3.c,v 1.6 2007/11/26 18:12:31 freddy77 Exp $";
+static char software_version[] = "$Id: timeout3.c,v 1.12 2010/07/05 09:20:33 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 static void init_connect(void);
@@ -48,18 +48,9 @@ static void init_connect(void);
 static void
 init_connect(void)
 {
-	if (SQLAllocEnv(&Environment) != SQL_SUCCESS) {
-		printf("Unable to allocate env\n");
-		exit(1);
-	}
-
-	SQLSetEnvAttr(Environment, SQL_ATTR_ODBC_VERSION, (SQLPOINTER) (SQL_OV_ODBC3), SQL_IS_UINTEGER);
-
-	if (SQLAllocConnect(Environment, &Connection) != SQL_SUCCESS) {
-		printf("Unable to allocate connection\n");
-		SQLFreeEnv(Environment);
-		exit(1);
-	}
+	CHKAllocEnv(&odbc_env, "S");
+	SQLSetEnvAttr(odbc_env, SQL_ATTR_ODBC_VERSION, (SQLPOINTER) (SQL_OV_ODBC3), SQL_IS_UINTEGER);
+	CHKAllocConnect(&odbc_conn, "S");
 }
 
 static pthread_t      fake_thread;
@@ -108,7 +99,7 @@ fake_thread_proc(void * arg)
 	memset(&sin, 0, sizeof(sin));
 	len = sizeof(sin);
 	alarm(30);
-	if ((fake_sock = accept(s, (struct sockaddr *) &sin, &len)) < 0) {
+	if (TDS_IS_SOCKET_INVALID(fake_sock = tds_accept(s, (struct sockaddr *) &sin, &len))) {
 		perror("accept");
 		exit(1);
 	}
@@ -128,14 +119,13 @@ fake_thread_proc(void * arg)
 int
 main(int argc, char *argv[])
 {
-	int res;
 	char tmp[2048];
 	char sqlstate[6];
 	SQLSMALLINT len;
 	int port;
 	time_t start_time, end_time;
 
-	if (read_login_info())
+	if (odbc_read_login_info())
 		exit(1);
 
 	/*
@@ -143,11 +133,11 @@ main(int argc, char *argv[])
 	 * is better to do it before connect cause uniODBC cache INIs
 	 * the name must be odbcinst.ini cause unixODBC accept only this name
 	 */
-	if (DRIVER[0]) {
+	if (odbc_driver[0]) {
 		FILE *f = fopen("odbcinst.ini", "w");
 
 		if (f) {
-			fprintf(f, "[FreeTDS]\nDriver = %s\n", DRIVER);
+			fprintf(f, "[FreeTDS]\nDriver = %s\n", odbc_driver);
 			fclose(f);
 			/* force iODBC */
 			setenv("ODBCINSTINI", "./odbcinst.ini", 1);
@@ -167,32 +157,20 @@ main(int argc, char *argv[])
 	printf("Fake server binded at port %d\n", port);
 
 	init_connect();
-	res = SQLSetConnectAttr(Connection, SQL_ATTR_CONNECTION_TIMEOUT, (SQLPOINTER) 10, sizeof(SQLINTEGER));
-	if (!SQL_SUCCEEDED(res))
-		ODBC_REPORT_ERROR("SQLSetConnectAttr error");
-	res = SQLSetConnectAttr(Connection, SQL_ATTR_LOGIN_TIMEOUT, (SQLPOINTER) 10, sizeof(SQLINTEGER));
-	if (!SQL_SUCCEEDED(res))
-		ODBC_REPORT_ERROR("SQLSetConnectAttr error");
+	CHKSetConnectAttr(SQL_ATTR_CONNECTION_TIMEOUT, (SQLPOINTER) 10, sizeof(SQLINTEGER), "SI");
+	CHKSetConnectAttr(SQL_ATTR_LOGIN_TIMEOUT, (SQLPOINTER) 10, sizeof(SQLINTEGER), "SI");
 
 	/* this is expected to work with unixODBC */
 	printf("try to connect to our port just to check connection timeout\n");
 	sprintf(tmp, "DRIVER=FreeTDS;SERVER=127.0.0.1;Port=%d;TDS_Version=7.0;UID=test;PWD=test;DATABASE=tempdb;", port);
 	start_time = time(NULL);
-	res = SQLDriverConnect(Connection, NULL, (SQLCHAR *) tmp, SQL_NTS, (SQLCHAR *) tmp, sizeof(tmp), &len, SQL_DRIVER_NOPROMPT);
-	if (SQL_SUCCEEDED(res)) {
-		fprintf(stderr, "SQLDriverConnect should fail (res=%d)\n", (int) res);
-		return 1;
-	}
+	CHKDriverConnect(NULL, (SQLCHAR *) tmp, SQL_NTS, (SQLCHAR *) tmp, sizeof(tmp), &len, SQL_DRIVER_NOPROMPT, "E");
 	end_time = time(NULL);
 
 	strcpy(sqlstate, "XXXXX");
 	tmp[0] = 0;
-	res = SQLGetDiagRec(SQL_HANDLE_DBC, Connection, 1, (SQLCHAR *) sqlstate, NULL, (SQLCHAR *) tmp, sizeof(tmp), NULL);
-	if (!SQL_SUCCEEDED(res)) {
-		printf("SQLGetDiagRec should not fail\n");
-		return 1;
-	}
-	Disconnect();
+	CHKGetDiagRec(SQL_HANDLE_DBC, odbc_conn, 1, (SQLCHAR *) sqlstate, NULL, (SQLCHAR *) tmp, sizeof(tmp), NULL, "SI");
+	odbc_disconnect();
 	CLOSESOCKET(fake_sock);
 	pthread_join(fake_thread, NULL);
 

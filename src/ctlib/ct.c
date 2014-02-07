@@ -39,7 +39,7 @@
 #include "tdsstring.h"
 #include "replacements.h"
 
-TDS_RCSID(var, "$Id: ct.c,v 1.177.2.1 2008/05/06 03:23:45 jklowden Exp $");
+TDS_RCSID(var, "$Id: ct.c,v 1.207 2010/10/05 08:36:36 freddy77 Exp $");
 
 
 static char * ct_describe_cmd_state(CS_INT state);
@@ -48,7 +48,6 @@ static char * ct_describe_cmd_state(CS_INT state);
  * @return 0 on success
  */
 static int _ct_fetch_cursor(CS_COMMAND * cmd, CS_INT type, CS_INT offset, CS_INT option, CS_INT * rows_read);
-int _ct_get_client_type(int datatype, int usertype, int size);
 static int _ct_fetchable_results(CS_COMMAND * cmd);
 static int _ct_process_return_status(TDSSOCKET * tds);
 
@@ -89,6 +88,8 @@ static CS_DYNAMIC * _ct_locate_dynamic(CS_CONNECTION * con, char *id, int idlen)
 static const char *
 _ct_get_layer(int layer)
 {
+	tdsdump_log(TDS_DBG_FUNC, "_ct_get_layer(%d)\n", layer);
+
 	switch (layer) {
 	case 1:
 		return "user api layer";
@@ -105,6 +106,8 @@ _ct_get_layer(int layer)
 static const char *
 _ct_get_origin(int origin)
 {
+	tdsdump_log(TDS_DBG_FUNC, "_ct_get_origin(%d)\n", origin);
+
 	switch (origin) {
 	case 1:
 		return "external error";
@@ -133,9 +136,12 @@ _ct_get_origin(int origin)
 static const char *
 _ct_get_user_api_layer_error(int error)
 {
+	tdsdump_log(TDS_DBG_FUNC, "_ct_get_user_api_layer_error(%d)\n", error);
+
 	switch (error) {
 	case 137:
-		return "A bind count of %1! is not consistent with the count supplied for existing binds. The current bind count is %2!.";
+		return  "A bind count of %1! is not consistent with the count supplied for existing binds. "
+			"The current bind count is %2!.";
 		break;
 	case 138:
 		return "Use direction CS_BLK_IN or CS_BLK_OUT for a bulk copy operation.";
@@ -169,6 +175,8 @@ _ct_get_msgstr(const char *funcname, int layer, int origin, int severity, int nu
 {
 	char *m;
 
+	tdsdump_log(TDS_DBG_FUNC, "_ct_get_msgstr(%s, %d, %d, %d, %d)\n", funcname, layer, origin, severity, number);
+
 	if (asprintf(&m,
 		     "%s: %s: %s: %s", funcname, _ct_get_layer(layer), _ct_get_origin(origin), _ct_get_user_api_layer_error(number)
 	    ) < 0) {
@@ -184,6 +192,8 @@ _ctclient_msg(CS_CONNECTION * con, const char *funcname, int layer, int origin, 
 	va_list ap;
 	CS_CLIENTMSG cm;
 	char *msgstr;
+
+	tdsdump_log(TDS_DBG_FUNC, "_ctclient_msg(%p, %s, %d, %d, %d, %d, %s)\n", con, funcname, layer, origin, severity, number, fmt);
 
 	va_start(ap, fmt);
 
@@ -210,11 +220,11 @@ _ctclient_msg(CS_CONNECTION * con, const char *funcname, int layer, int origin, 
 }
 
 static CS_RETCODE
-ct_set_command_state(CS_COMMAND *cmd, CS_INT state) {
-
-	tdsdump_log(TDS_DBG_FUNC, "setting command state from %s to %s\n",
-		    ct_describe_cmd_state(cmd->command_state),
-		    ct_describe_cmd_state(state));
+ct_set_command_state(CS_COMMAND *cmd, CS_INT state) 
+{
+	tdsdump_log(TDS_DBG_FUNC, "setting command state to %s (from %s)\n",
+		    ct_describe_cmd_state(state),
+		    ct_describe_cmd_state(cmd->command_state));
 
 	cmd->command_state = state;
 
@@ -222,7 +232,10 @@ ct_set_command_state(CS_COMMAND *cmd, CS_INT state) {
 }
 
 static char *
-ct_describe_cmd_state(CS_INT state) {
+ct_describe_cmd_state(CS_INT state) 
+{
+	tdsdump_log(TDS_DBG_FUNC, "ct_describe_cmd_state(%d)\n", state);
+
 	switch (state) {
 	case _CS_COMMAND_IDLE:
 		return "IDLE";
@@ -239,7 +252,8 @@ ct_describe_cmd_state(CS_INT state) {
 CS_RETCODE
 ct_exit(CS_CONTEXT * ctx, CS_INT unused)
 {
-	tdsdump_log(TDS_DBG_FUNC, "ct_exit()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_exit(%p, %d)\n", ctx, unused);
+
 	return CS_SUCCEED;
 }
 
@@ -248,9 +262,11 @@ ct_init(CS_CONTEXT * ctx, CS_INT version)
 {
 	/* uncomment the next line to get pre-login trace */
 	/* tdsdump_open("/tmp/tds2.log"); */
-	tdsdump_log(TDS_DBG_FUNC, "ct_init()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_init(%p, %d)\n", ctx, version);
+	
 	ctx->tds_ctx->msg_handler = _ct_handle_server_message;
 	ctx->tds_ctx->err_handler = _ct_handle_client_message;
+
 	return CS_SUCCEED;
 }
 
@@ -259,17 +275,18 @@ ct_con_alloc(CS_CONTEXT * ctx, CS_CONNECTION ** con)
 {
 	TDSLOGIN *login;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_con_alloc()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_con_alloc(%p, %p)\n", ctx, con);
+
 	login = tds_alloc_login();
 	if (!login)
 		return CS_FAIL;
-	*con = (CS_CONNECTION *) malloc(sizeof(CS_CONNECTION));
+	*con = (CS_CONNECTION *) calloc(1, sizeof(CS_CONNECTION));
 	if (!*con) {
 		tds_free_login(login);
 		return CS_FAIL;
 	}
-	memset(*con, '\0', sizeof(CS_CONNECTION));
 	(*con)->tds_login = login;
+	(*con)->server_addr = NULL;
 
 	/* so we know who we belong to */
 	(*con)->ctx = ctx;
@@ -285,6 +302,8 @@ CS_RETCODE
 ct_callback(CS_CONTEXT * ctx, CS_CONNECTION * con, CS_INT action, CS_INT type, CS_VOID * func)
 {
 	int (*funcptr) (void *, void *, void *) = (int (*)(void *, void *, void *)) func;
+
+	tdsdump_log(TDS_DBG_FUNC, "ct_callback(%p, %p, %d, %d, %p)\n", ctx, con, action, type, func);
 
 	tdsdump_log(TDS_DBG_FUNC, "ct_callback() action = %s\n", CS_GET ? "CS_GET" : "CS_SET");
 	/* one of these has to be defined */
@@ -329,7 +348,8 @@ ct_con_props(CS_CONNECTION * con, CS_INT action, CS_INT property, CS_VOID * buff
 	CS_INT intval = 0, maxcp;
 	TDSSOCKET *tds;
 	TDSLOGIN *tds_login;
-	char *set_buffer = NULL;
+
+	tdsdump_log(TDS_DBG_FUNC, "ct_con_props(%p, %d, %d, %p, %d, %p)\n", con, action, property, buffer, buflen, out_len);
 
 	tdsdump_log(TDS_DBG_FUNC, "ct_con_props() action = %s property = %d\n", CS_GET ? "CS_GET" : "CS_SET", property);
 
@@ -337,6 +357,8 @@ ct_con_props(CS_CONNECTION * con, CS_INT action, CS_INT property, CS_VOID * buff
 	tds_login = con->tds_login;
 
 	if (action == CS_SET) {
+		char *set_buffer = NULL;
+
 		if (property == CS_USERNAME || property == CS_PASSWORD || property == CS_APPNAME ||
 			property == CS_HOSTNAME || property == CS_SERVERADDR) {
 			if (buflen == CS_NULLTERM) {
@@ -375,15 +397,17 @@ ct_con_props(CS_CONNECTION * con, CS_INT action, CS_INT property, CS_VOID * buff
 			break;
 		case CS_SERVERADDR: {
 			/* Format of this property: "[hostname] [port]" */
-			char *host, *port;
+			char *host, *port, *lasts;
 			int portno;
-			host= strtok(set_buffer, " ");
-			port= strtok(NULL, " ");
+			host= strtok_r(set_buffer, " ", &lasts);
+			port= strtok_r(NULL, " ", &lasts);
 			if (!host || !port)
 				return CS_FAIL;
 
-			portno= (int)strtol(port, NULL, 10);
-			tds_set_server_addr(tds_login, host);
+			portno = (int)strtol(port, NULL, 10);
+			if (portno < 1 || portno >= 65536)
+				return CS_FAIL;
+			con->server_addr = strdup(host);
 			tds_set_port(tds_login, portno);
 			break;
 		}
@@ -565,10 +589,10 @@ ct_connect(CS_CONNECTION * con, CS_CHAR * servername, CS_INT snamelen)
 	CS_CONTEXT *ctx;
 	TDSCONNECTION *connection;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_connect() servername = %s\n", servername ? servername : "NULL");
+	tdsdump_log(TDS_DBG_FUNC, "ct_connect(%p, %s, %d)\n", con, servername ? servername : "NULL", snamelen);
 
-	if (!tds_dstr_isempty(&con->tds_login->server_addr)) {
-		server = tds_dstr_buf(&con->tds_login->server_addr);
+	if (con->server_addr) {
+		server = "";
 	} else if (snamelen == 0 || snamelen == CS_UNUSED) {
 		server = NULL;
 	} else if (snamelen == CS_NULLTERM) {
@@ -586,11 +610,13 @@ ct_connect(CS_CONNECTION * con, CS_CHAR * servername, CS_INT snamelen)
 	if (!(con->tds_socket = tds_alloc_socket(ctx->tds_ctx, 512)))
 		return CS_FAIL;
 	tds_set_parent(con->tds_socket, (void *) con);
-	if (!(connection = tds_read_config_info(NULL, con->tds_login, ctx->tds_ctx->locale))) {
+	if (!(connection = tds_read_config_info(con->tds_socket, con->tds_login, ctx->tds_ctx->locale))) {
 		tds_free_socket(con->tds_socket);
 		con->tds_socket = NULL;
 		return CS_FAIL;
 	}
+	if (con->server_addr)
+		tds_dstr_copy(&connection->server_host_name, con->server_addr);
 
 	/* override locale settings with CS_CONNECTION settings, if any */
 	if (con->locale) {
@@ -602,11 +628,12 @@ ct_connect(CS_CONNECTION * con, CS_CHAR * servername, CS_INT snamelen)
 			if (!tds_dstr_copy(&connection->language, con->locale->language)) 
 				goto Cleanup;
 		}
-		if (con->locale->time) {
-			free(con->tds_socket->date_fmt);
+		if (con->locale->time && con->tds_socket->tds_ctx) {
+			TDSLOCALE *locale = con->tds_socket->tds_ctx->locale;
+			free(locale->date_fmt);
 			/* TODO convert format from CTLib to libTDS */
-			con->tds_socket->date_fmt = strdup(con->locale->time);
-			if (!con->tds_socket->date_fmt)
+			locale->date_fmt = strdup(con->locale->time);
+			if (!locale->date_fmt)
 				goto Cleanup;
 		}
 		/* TODO how to handle this?
@@ -615,7 +642,7 @@ ct_connect(CS_CONNECTION * con, CS_CHAR * servername, CS_INT snamelen)
 		*/
 	}
 
-	if (tds_connect(con->tds_socket, connection) == TDS_FAIL)
+	if (tds_connect_and_login(con->tds_socket, connection) != TDS_SUCCEED)
 		goto Cleanup;
 
 	tds_free_connection(connection);
@@ -634,16 +661,14 @@ Cleanup:
 CS_RETCODE
 ct_cmd_alloc(CS_CONNECTION * con, CS_COMMAND ** cmd)
 {
-
 	CS_COMMAND_LIST *command_list;
 	CS_COMMAND_LIST *pcommand;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_cmd_alloc()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_cmd_alloc(%p, %p)\n", con, cmd);
 
-	*cmd = (CS_COMMAND *) malloc(sizeof(CS_COMMAND));
+	*cmd = (CS_COMMAND *) calloc(1, sizeof(CS_COMMAND));
 	if (!*cmd)
 		return CS_FAIL;
-	memset(*cmd, '\0', sizeof(CS_COMMAND));
 
 	/* so we know who we belong to */
 	(*cmd)->con = con;
@@ -651,8 +676,7 @@ ct_cmd_alloc(CS_CONNECTION * con, CS_COMMAND ** cmd)
 	/* initialise command state */
 	ct_set_command_state(*cmd, _CS_COMMAND_IDLE);
 
-	command_list = malloc(sizeof(CS_COMMAND_LIST));
-	memset(command_list, '\0', sizeof(CS_COMMAND_LIST));
+	command_list = calloc(1, sizeof(CS_COMMAND_LIST));
 	command_list->cmd = *cmd;
 	command_list->next = NULL;
 
@@ -676,10 +700,9 @@ ct_cmd_alloc(CS_CONNECTION * con, CS_COMMAND ** cmd)
 CS_RETCODE
 ct_command(CS_COMMAND * cmd, CS_INT type, const CS_VOID * buffer, CS_INT buflen, CS_INT option)
 {
-	int query_len;
-	int current_query_len;
+	int query_len, current_query_len;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_command()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_command(%p, %d, %p, %d, %d)\n", cmd, type, buffer, buflen, option);
 
 	/* Unless we are in the process of building a CS_LANG_CMD   */
 	/* type command, then clear everything, ready to start anew */
@@ -741,21 +764,18 @@ ct_command(CS_COMMAND * cmd, CS_INT type, const CS_VOID * buffer, CS_INT buflen,
 		if (cmd == NULL)
 			return CS_FAIL;
 
-		cmd->rpc = (CSREMOTE_PROC *) malloc(sizeof(CSREMOTE_PROC));
+		cmd->rpc = (CSREMOTE_PROC *) calloc(1, sizeof(CSREMOTE_PROC));
 		if (cmd->rpc == NULL)
 			return CS_FAIL;
-
-		memset(cmd->rpc, 0, sizeof(CSREMOTE_PROC));
 
 		if (buflen == CS_NULLTERM) {
 			cmd->rpc->name = strdup(buffer);
 			if (cmd->rpc->name == NULL)
 				return CS_FAIL;
 		} else if (buflen > 0) {
-			cmd->rpc->name = (char *) malloc(buflen + 1);
+			cmd->rpc->name = (char *) calloc(1, buflen + 1);
 			if (cmd->rpc->name == NULL)
 				return CS_FAIL;
-			memset(cmd->rpc->name, 0, buflen + 1);
 			strncpy(cmd->rpc->name, (const char *) buffer, buflen);
 		} else {
 			return CS_FAIL;
@@ -821,6 +841,8 @@ _ct_initialise_cmd(CS_COMMAND *cmd)
 	free(cmd->query);
 	cmd->query = NULL;
 
+	tdsdump_log(TDS_DBG_FUNC, "_ct_initialise_cmd(%p)\n", cmd);
+
 	if (cmd->input_params) {
 		param_clear(cmd->input_params);
 		cmd->input_params = NULL;
@@ -840,6 +862,8 @@ ct_send(CS_COMMAND * cmd)
 	TDSPARAMINFO *pparam_info;
 	TDSCURSOR *cursor;
 	TDSDYNAMIC *tdsdyn;
+
+	tdsdump_log(TDS_DBG_FUNC, "ct_send(%p)\n", cmd);
 
 	tdsdump_log(TDS_DBG_FUNC, "ct_send() command_type = %d\n", cmd->command_type);
 
@@ -1078,8 +1102,7 @@ ct_send(CS_COMMAND * cmd)
 	}
 
 	if (cmd->command_type == CS_SEND_DATA_CMD) {
-		tds_flush_packet(tds);
-		tds_set_state(tds, TDS_PENDING);
+		tds_writetext_end(tds);
 		ct_set_command_state(cmd, _CS_COMMAND_SENT);
 	}
 
@@ -1092,12 +1115,11 @@ ct_results(CS_COMMAND * cmd, CS_INT * result_type)
 {
 	TDSSOCKET *tds;
 	CS_CONTEXT *context;
-
 	int tdsret;
 	CS_INT res_type;
 	CS_INT done_flags;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_results()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_results(%p, %p)\n", cmd, result_type);
 
 	if (cmd->cancel_state == _CS_CANCEL_PENDING) {
 		_ct_cancel_cleanup(cmd);
@@ -1222,7 +1244,8 @@ ct_results(CS_COMMAND * cmd, CS_INT * result_type)
 					return CS_SUCCEED;
 				}
 
-				tdsret = tds_process_tokens(tds, &res_type, NULL, TDS_STOPAT_ROWFMT|TDS_RETURN_DONE|TDS_RETURN_ROW|TDS_RETURN_COMPUTE);
+				tdsret = tds_process_tokens(tds, &res_type, NULL,
+							 TDS_STOPAT_ROWFMT|TDS_RETURN_DONE|TDS_RETURN_ROW|TDS_RETURN_COMPUTE);
 
 				/* set results state to show that the result set has rows... */
 
@@ -1431,6 +1454,8 @@ ct_bind(CS_COMMAND * cmd, CS_INT item, CS_DATAFMT * datafmt, CS_VOID * buffer, C
 	CS_CONNECTION *con = cmd->con;
 	CS_INT bind_count;
 
+	tdsdump_log(TDS_DBG_FUNC, "ct_bind(%p, %d, %p, %p, %p, %p)\n", cmd, item, datafmt, buffer, copied, indicator);
+
 	tdsdump_log(TDS_DBG_FUNC, "ct_bind() datafmt count = %d column_number = %d\n", datafmt->count, item);
 
 	if (!con || !con->tds_socket)
@@ -1445,8 +1470,10 @@ ct_bind(CS_COMMAND * cmd, CS_INT item, CS_DATAFMT * datafmt, CS_VOID * buffer, C
 
 	colinfo = resinfo->columns[item - 1];
 
-	/* check whether the request is for array binding and ensure that user */
-	/* supplies the same datafmt->count to the subsequent ct_bind calls    */
+	/* 
+	 * Check whether the request is for array binding, and ensure that the user
+	 * supplies the same datafmt->count to the subsequent ct_bind calls    
+	 */
 
 	bind_count = (datafmt->count == 0) ? 1 : datafmt->count;
 
@@ -1479,15 +1506,16 @@ ct_bind(CS_COMMAND * cmd, CS_INT item, CS_DATAFMT * datafmt, CS_VOID * buffer, C
 }
 
 CS_RETCODE
-ct_fetch(CS_COMMAND * cmd, CS_INT type, CS_INT offset, CS_INT option, CS_INT * rows_read)
+ct_fetch(CS_COMMAND * cmd, CS_INT type, CS_INT offset, CS_INT option, CS_INT * prows_read)
 {
 	TDS_INT ret_type;
 	TDS_INT ret;
 	TDS_INT marker;
 	TDS_INT temp_count;
 	TDSSOCKET *tds;
+	CS_INT rows_read_dummy;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_fetch()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_fetch(%p, %d, %d, %d, %p)\n", cmd, type, offset, option, prows_read);
 
 	if (!cmd->con || !cmd->con->tds_socket)
 		return CS_FAIL;
@@ -1501,21 +1529,21 @@ ct_fetch(CS_COMMAND * cmd, CS_INT type, CS_INT offset, CS_INT option, CS_INT * r
 		_ct_cancel_cleanup(cmd);
 		return CS_CANCELED;
 	}
+	
+	if( prows_read == NULL )
+		prows_read = &rows_read_dummy;
 
 	tds = cmd->con->tds_socket;
 
-	/* We'll call a special function for fetches from a cursor            */
-	/* the processing is too incompatible to patch into a single function */
-
+	/* 
+	 * Call a special function for fetches from a cursor because 
+	 * the processing is too incompatible to patch into a single function 
+	 */
 	if (cmd->command_type == CS_CUR_CMD) {
-		return _ct_fetch_cursor(cmd, type, offset, option, rows_read);
+		return _ct_fetch_cursor(cmd, type, offset, option, prows_read);
 	}
 
-	if (rows_read)
-		*rows_read = 0;
-
-	/* taking a copy of the cmd->bind_count value. */
-	temp_count = cmd->bind_count;
+	*prows_read = 0;
 
 	if ( cmd->bind_count == CS_UNUSED )
 		cmd->bind_count = 1;
@@ -1528,8 +1556,7 @@ ct_fetch(CS_COMMAND * cmd, CS_INT type, CS_INT offset, CS_INT option, CS_INT * r
 		cmd->get_data_bytes_returned = 0;
 		if (_ct_bind_data(cmd->con->ctx, tds->current_results, tds->current_results, 0))
 			return CS_ROW_FAIL;
-		if (rows_read)
-			*rows_read = 1;
+		*prows_read = 1;
 		return CS_SUCCEED;
 	}
 
@@ -1542,17 +1569,18 @@ ct_fetch(CS_COMMAND * cmd, CS_INT type, CS_INT offset, CS_INT option, CS_INT * r
 
 
 	marker = tds_peek(tds);
-	if ((cmd->curr_result_type == CS_ROW_RESULT && marker != TDS_ROW_TOKEN) ||
-		(cmd->curr_result_type == CS_STATUS_RESULT && marker != TDS_RETURNSTATUS_TOKEN) )
+	if ((cmd->curr_result_type == CS_ROW_RESULT    && marker != TDS_ROW_TOKEN)
+	||  (cmd->curr_result_type == CS_STATUS_RESULT && marker != TDS_RETURNSTATUS_TOKEN) )
 		return CS_END_DATA;
 
 	/* Array Binding Code changes start here */
 
 	for (temp_count = 0; temp_count < cmd->bind_count; temp_count++) {
 
-		ret = tds_process_tokens(tds, &ret_type, NULL, TDS_STOPAT_ROWFMT|TDS_STOPAT_DONE|TDS_RETURN_ROW|TDS_RETURN_COMPUTE);
+		ret = tds_process_tokens(tds, &ret_type, NULL, 
+					 TDS_STOPAT_ROWFMT|TDS_STOPAT_DONE|TDS_RETURN_ROW|TDS_RETURN_COMPUTE);
 
-		tdsdump_log(TDS_DBG_FUNC, "inside ct_fetch()process_row_tokens returned %d\n", ret);
+		tdsdump_log(TDS_DBG_FUNC, "inside ct_fetch() process_row_tokens returned %d\n", ret);
 
 		switch (ret) {
 			case TDS_SUCCEED:
@@ -1561,8 +1589,7 @@ ct_fetch(CS_COMMAND * cmd, CS_INT type, CS_INT offset, CS_INT option, CS_INT * r
 					cmd->get_data_bytes_returned = 0;
 					if (_ct_bind_data(cmd->con->ctx, tds->current_results, tds->current_results, temp_count))
 						return CS_ROW_FAIL;
-					if (rows_read)
-						*rows_read = *rows_read + 1;
+					(*prows_read)++;
 					break;
 				}
 			case TDS_NO_MORE_RESULTS:
@@ -1604,7 +1631,7 @@ _ct_fetch_cursor(CS_COMMAND * cmd, CS_INT type, CS_INT offset, CS_INT option, CS
 	TDS_INT done_flags;
 	TDS_INT rows_this_fetch = 0;
 
-	tdsdump_log(TDS_DBG_FUNC, "_ct_fetch_cursor()\n");
+	tdsdump_log(TDS_DBG_FUNC, "_ct_fetch_cursor(%p, %d, %d, %d, %p)\n", cmd, type, offset, option, rows_read);
 
 	if (!cmd->con || !cmd->con->tds_socket)
 		return CS_FAIL;
@@ -1650,7 +1677,8 @@ _ct_fetch_cursor(CS_COMMAND * cmd, CS_INT type, CS_INT offset, CS_INT option, CS
 			case CS_ROW_RESULT:
 				for (temp_count = 0; temp_count < cmd->bind_count; temp_count++) {
 
-					ret = tds_process_tokens(tds, &restype, NULL, TDS_STOPAT_ROWFMT|TDS_STOPAT_DONE|TDS_RETURN_ROW|TDS_RETURN_COMPUTE);
+					ret = tds_process_tokens(tds, &restype, NULL,
+							 TDS_STOPAT_ROWFMT|TDS_STOPAT_DONE|TDS_RETURN_ROW|TDS_RETURN_COMPUTE);
 
 					tdsdump_log(TDS_DBG_FUNC, "_ct_fetch_cursor() tds_process_tokens returned %d\n", ret);
 
@@ -1658,7 +1686,8 @@ _ct_fetch_cursor(CS_COMMAND * cmd, CS_INT type, CS_INT offset, CS_INT option, CS
 						cmd->get_data_item = 0;
 						cmd->get_data_bytes_returned = 0;
 						if (restype == TDS_ROW_RESULT) {
-							if (_ct_bind_data(cmd->con->ctx, tds->current_results, tds->current_results, temp_count))
+							if (_ct_bind_data(cmd->con->ctx, tds->current_results,
+									  tds->current_results, temp_count))
 								return CS_ROW_FAIL;
 							if (rows_read)
 								*rows_read = *rows_read + 1;
@@ -1690,91 +1719,73 @@ _ct_fetch_cursor(CS_COMMAND * cmd, CS_INT type, CS_INT offset, CS_INT option, CS
 int
 _ct_bind_data(CS_CONTEXT *ctx, TDSRESULTINFO * resinfo, TDSRESULTINFO *bindinfo, CS_INT offset)
 {
-	int i;
-	TDSCOLUMN *curcol;
-	TDSCOLUMN *bindcol;
-	unsigned char *src;
-	unsigned char *dest, *temp_add;
-	int result = 0;
-	TDS_INT srctype, srclen, desttype, len;
+	TDSCOLUMN *curcol, *bindcol;
+	unsigned char *src, *dest, *temp_add;
+	int i, result = 0;
 	CS_DATAFMT srcfmt, destfmt;
-	TDS_INT *datalen = NULL;
-	TDS_SMALLINT *nullind = NULL;
+	TDS_INT datalen_dummy, *pdatalen = &datalen_dummy;
+	TDS_SMALLINT nullind_dummy, *nullind = &nullind_dummy;
 
-	tdsdump_log(TDS_DBG_FUNC, "_ct_bind_data()\n");
+	tdsdump_log(TDS_DBG_FUNC, "_ct_bind_data(%p, %p, %p, %d)\n", ctx, resinfo, bindinfo, offset);
 
 	for (i = 0; i < resinfo->num_cols; i++) {
 
 		curcol = resinfo->columns[i];
 		bindcol = bindinfo->columns[i];
 
-		tdsdump_log(TDS_DBG_FUNC, "_ct_bind_data(): column_type: %d column_len: %d\n",
-			curcol->column_type,
-			curcol->column_cur_size
-		);
+		tdsdump_log(TDS_DBG_FUNC, "_ct_bind_data(): column %d is type %d and has length %d\n",
+						i, curcol->column_type, curcol->column_cur_size);
 
 		if (curcol->column_hidden)
 			continue;
 
-
-		srctype = curcol->column_type;
-		desttype = _ct_get_server_type(bindcol->column_bindtype);
-
-		/* retrieve the initial bound column_varaddress */
-		/* and increment it if offset specified         */
+		/* 
+		 * Retrieve the initial bound column_varaddress and increment it if offset specified         
+		 */
 
 		temp_add = (unsigned char *) bindcol->column_varaddr;
 		dest = temp_add + (offset * bindcol->column_bindlen);
 
 		if (bindcol->column_nullbind) {
 			nullind = bindcol->column_nullbind;
+			assert(nullind);
 			nullind += offset;
 		}
 		if (bindcol->column_lenbind) {
-			datalen = bindcol->column_lenbind;
-			datalen += offset;
+			pdatalen = bindcol->column_lenbind;
+			assert(pdatalen);
+			pdatalen += offset;
 		}
 
 		if (dest) {
-
 			if (curcol->column_cur_size < 0) {
-				if (nullind)
-					*nullind = -1;
-				if (datalen)
-					*datalen = 0;
+				*nullind = -1;
+				*pdatalen = 0;
 			} else {
 
-				srctype = _ct_get_client_type(curcol->column_type, curcol->column_usertype, curcol->column_size);
-
 				src = curcol->column_data;
-				if (is_blob_type(curcol->column_type))
+				if (is_blob_col(curcol))
 					src = (unsigned char *) ((TDSBLOB *) src)->textvalue;
 
-				srclen = curcol->column_cur_size;
-				srcfmt.datatype = srctype;
-				srcfmt.maxlength = srclen;
+				srcfmt.datatype = _ct_get_client_type(curcol);
+				srcfmt.maxlength = curcol->column_cur_size;
 
 				destfmt.datatype = bindcol->column_bindtype;
 				destfmt.maxlength = bindcol->column_bindlen;
 				destfmt.format = bindcol->column_bindfmt;
 
 				/* if convert return FAIL mark error but process other columns */
-				if ((result= cs_convert(ctx, &srcfmt, (CS_VOID *) src, &destfmt, (CS_VOID *) dest, &len) != CS_SUCCEED)) {
+				if ((result= cs_convert(ctx, &srcfmt, src, &destfmt, dest, pdatalen) != CS_SUCCEED)) {
 					tdsdump_log(TDS_DBG_FUNC, "cs_convert-result = %d\n", result);
 					result = 1;
-					len = 0;
-					tdsdump_log(TDS_DBG_INFO1, "\n  convert failed for %d \n", srcfmt.datatype);
+					tdsdump_log(TDS_DBG_INFO1, "error: converted only %d bytes for type %d \n", 
+									*pdatalen, srcfmt.datatype);
 				}
 
-				if (nullind)
-					*nullind = 0;
-				if (datalen) {
-					*datalen = len;
-				}
+				*nullind = 0;
 			}
 		} else {
-			if (datalen)
-				*datalen = 0;
+			*pdatalen = 0;
 		}
 	}
 	return result;
@@ -1784,6 +1795,9 @@ CS_RETCODE
 ct_cmd_drop(CS_COMMAND * cmd)
 {
 	CS_RETCODE ret;
+
+	tdsdump_log(TDS_DBG_FUNC, "ct_cmd_drop(%p)\n", cmd);
+
 	ret = _ct_cmd_drop(cmd, 1);
 	return ret;
 }
@@ -1796,7 +1810,8 @@ _ct_cmd_drop(CS_COMMAND * cmd, CS_INT free_conn_ref)
 	CS_COMMAND_LIST *next = NULL;
 	CS_CONNECTION *con;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_cmd_drop()\n");
+	tdsdump_log(TDS_DBG_FUNC, "_ct_cmd_drop(%p, %d)\n", cmd, free_conn_ref);
+
 	if (cmd) {
 		free(cmd->query);
 		if (cmd->input_params)
@@ -1850,7 +1865,8 @@ _ct_cmd_drop(CS_COMMAND * cmd, CS_INT free_conn_ref)
 CS_RETCODE
 ct_close(CS_CONNECTION * con, CS_INT option)
 {
-	tdsdump_log(TDS_DBG_FUNC, "ct_close()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_close(%p, %d)\n", con, option);
+
 	tds_free_socket(con->tds_socket);
 	con->tds_socket = NULL;
 	return CS_SUCCEED;
@@ -1859,10 +1875,10 @@ ct_close(CS_CONNECTION * con, CS_INT option)
 CS_RETCODE
 ct_con_drop(CS_CONNECTION * con)
 {
-	CS_COMMAND_LIST *currptr;
-	CS_COMMAND_LIST *freeptr;
+	CS_COMMAND_LIST *currptr, *freeptr;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_con_drop()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_con_drop(%p)\n", con);
+
 	if (con) {
 		free(con->userdata);
 		if (con->tds_login)
@@ -1879,16 +1895,18 @@ ct_con_drop(CS_CONNECTION * con)
 		}
 		if (con->locale)
 			_cs_locale_free(con->locale);
+		free(con->server_addr);
 		free(con);
 	}
 	return CS_SUCCEED;
 }
 
 int
-_ct_get_client_type(int datatype, int usertype, int size)
+_ct_get_client_type(TDSCOLUMN *col)
 {
-	tdsdump_log(TDS_DBG_FUNC, "_ct_get_client_type(type %d, user %d, size %d)\n", datatype, usertype, size);
-	switch (datatype) {
+	tdsdump_log(TDS_DBG_FUNC, "_ct_get_client_type(type %d, user %d, size %d)\n", col->column_type, col->column_usertype, col->column_size);
+
+	switch (col->column_type) {
 	case SYBBIT:
 	case SYBBITN:
 		return CS_BIT_TYPE;
@@ -1910,7 +1928,7 @@ _ct_get_client_type(int datatype, int usertype, int size)
 		return CS_TINYINT_TYPE;
 		break;
 	case SYBINTN:
-		switch (size) {
+		switch (col->column_size) {
 		case 8:
 			return CS_BIGINT_TYPE;
 		case 4:
@@ -1920,7 +1938,7 @@ _ct_get_client_type(int datatype, int usertype, int size)
 		case 1:
 			return CS_TINYINT_TYPE;
 		default:
-			fprintf(stderr, "Unknown size %d for SYBINTN\n", size);
+			fprintf(stderr, "Unknown size %d for SYBINTN\n", col->column_size);
 		}
 		break;
 	case SYBREAL:
@@ -1930,13 +1948,13 @@ _ct_get_client_type(int datatype, int usertype, int size)
 		return CS_FLOAT_TYPE;
 		break;
 	case SYBFLTN:
-		if (size == 4) {
+		if (col->column_size == 4) {
 			return CS_REAL_TYPE;
-		} else if (size == 8) {
+		} else if (col->column_size == 8) {
 			return CS_FLOAT_TYPE;
-		} else {
-			fprintf(stderr, "Error! unknown float size of %d\n", size);
 		}
+		fprintf(stderr, "Error! unknown float size of %d\n", col->column_size);
+		break;
 	case SYBMONEY:
 		return CS_MONEY_TYPE;
 		break;
@@ -1944,13 +1962,13 @@ _ct_get_client_type(int datatype, int usertype, int size)
 		return CS_MONEY4_TYPE;
 		break;
 	case SYBMONEYN:
-		if (size == 4) {
+		if (col->column_size == 4) {
 			return CS_MONEY4_TYPE;
-		} else if (size == 8) {
+		} else if (col->column_size == 8) {
 			return CS_MONEY_TYPE;
-		} else {
-			fprintf(stderr, "Error! unknown money size of %d\n", size);
 		}
+		fprintf(stderr, "Error! unknown money size of %d\n", col->column_size);
+		break;
 	case SYBDATETIME:
 		return CS_DATETIME_TYPE;
 		break;
@@ -1958,13 +1976,12 @@ _ct_get_client_type(int datatype, int usertype, int size)
 		return CS_DATETIME4_TYPE;
 		break;
 	case SYBDATETIMN:
-		if (size == 4) {
+		if (col->column_size == 4) {
 			return CS_DATETIME4_TYPE;
-		} else if (size == 8) {
+		} else if (col->column_size == 8) {
 			return CS_DATETIME_TYPE;
-		} else {
-			fprintf(stderr, "Error! unknown date size of %d\n", size);
 		}
+		fprintf(stderr, "Error! unknown date size of %d\n", col->column_size);
 		break;
 	case SYBNUMERIC:
 		return CS_NUMERIC_TYPE;
@@ -1973,13 +1990,11 @@ _ct_get_client_type(int datatype, int usertype, int size)
 		return CS_DECIMAL_TYPE;
 		break;
 	case SYBBINARY:
+	case SYBVARBINARY:
 		return CS_BINARY_TYPE;
 		break;
 	case SYBIMAGE:
 		return CS_IMAGE_TYPE;
-		break;
-	case SYBVARBINARY:
-		return CS_VARBINARY_TYPE;
 		break;
 	case SYBTEXT:
 		return CS_TEXT_TYPE;
@@ -1988,9 +2003,9 @@ _ct_get_client_type(int datatype, int usertype, int size)
 		return CS_UNIQUE_TYPE;
 		break;
 	case SYBLONGBINARY:
-		if (usertype == USER_UNICHAR_TYPE || usertype == USER_UNIVARCHAR_TYPE)
+		if (col->column_usertype == USER_UNICHAR_TYPE || col->column_usertype == USER_UNIVARCHAR_TYPE)
 			return CS_UNICHAR_TYPE;
-		return CS_CHAR_TYPE;
+		return CS_LONGBINARY_TYPE;
 		break;
 	}
 
@@ -2001,70 +2016,32 @@ int
 _ct_get_server_type(int datatype)
 {
 	tdsdump_log(TDS_DBG_FUNC, "_ct_get_server_type(%d)\n", datatype);
+	
 	switch (datatype) {
-	case CS_IMAGE_TYPE:
-		return SYBIMAGE;
-		break;
-	case CS_BINARY_TYPE:
-		return SYBBINARY;
-		break;
-	case CS_BIT_TYPE:
-		return SYBBIT;
-		break;
-	case CS_CHAR_TYPE:
-		return SYBCHAR;
-		break;
+	case CS_IMAGE_TYPE:		return SYBIMAGE;
+	case CS_BINARY_TYPE:		return SYBBINARY;
+	case CS_BIT_TYPE:		return SYBBIT;	
+	case CS_CHAR_TYPE:		return SYBCHAR;	
+	case CS_VARCHAR_TYPE:		return SYBVARCHAR;
 	case CS_LONG_TYPE:
-	case CS_BIGINT_TYPE:
-		return SYBINT8;
-		break;
-	case CS_INT_TYPE:
-		return SYBINT4;
-		break;
-	case CS_SMALLINT_TYPE:
-		return SYBINT2;
-		break;
-	case CS_TINYINT_TYPE:
-		return SYBINT1;
-		break;
-	case CS_REAL_TYPE:
-		return SYBREAL;
-		break;
-	case CS_FLOAT_TYPE:
-		return SYBFLT8;
-		break;
-	case CS_MONEY_TYPE:
-		return SYBMONEY;
-		break;
-	case CS_MONEY4_TYPE:
-		return SYBMONEY4;
-		break;
-	case CS_DATETIME_TYPE:
-		return SYBDATETIME;
-		break;
-	case CS_DATETIME4_TYPE:
-		return SYBDATETIME4;
-		break;
-	case CS_NUMERIC_TYPE:
-		return SYBNUMERIC;
-		break;
-	case CS_DECIMAL_TYPE:
-		return SYBDECIMAL;
-		break;
-	case CS_VARBINARY_TYPE:
-		return SYBVARBINARY;
-		break;
-	case CS_TEXT_TYPE:
-		return SYBTEXT;
-		break;
-	case CS_UNIQUE_TYPE:
-		return SYBUNIQUE;
-		break;
-	case CS_LONGBINARY_TYPE:	/* vicm */
-		return SYBLONGBINARY;
-		break;
-	case CS_UNICHAR_TYPE:
-		return SYBVARCHAR;
+	case CS_BIGINT_TYPE:		return SYBINT8;	
+	case CS_INT_TYPE:		return SYBINT4;	
+	case CS_SMALLINT_TYPE:		return SYBINT2;	
+	case CS_TINYINT_TYPE:		return SYBINT1;	
+	case CS_REAL_TYPE:		return SYBREAL;	
+	case CS_FLOAT_TYPE:		return SYBFLT8;	
+	case CS_MONEY_TYPE:		return SYBMONEY;
+	case CS_MONEY4_TYPE:		return SYBMONEY4;
+	case CS_DATETIME_TYPE:		return SYBDATETIME;
+	case CS_DATETIME4_TYPE:		return SYBDATETIME4;
+	case CS_NUMERIC_TYPE:		return SYBNUMERIC;
+	case CS_DECIMAL_TYPE:		return SYBDECIMAL;
+	case CS_VARBINARY_TYPE:		return SYBVARBINARY;
+	case CS_TEXT_TYPE:		return SYBTEXT;	
+	case CS_UNIQUE_TYPE:		return SYBUNIQUE;
+	case CS_LONGBINARY_TYPE:	return SYBLONGBINARY;
+	case CS_UNICHAR_TYPE:		return SYBVARCHAR;
+
 	default:
 		return -1;
 		break;
@@ -2079,7 +2056,7 @@ ct_cancel(CS_CONNECTION * conn, CS_COMMAND * cmd, CS_INT type)
 	CS_COMMAND *conn_cmd;
 	CS_CONNECTION *cmd_conn;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_cancel()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_cancel(%p, %p, %d)\n", conn, cmd, type);
 
 	/*
 	 * Comments taken from Sybase ct-library reference manual
@@ -2159,7 +2136,8 @@ ct_cancel(CS_CONNECTION * conn, CS_COMMAND * cmd, CS_INT type)
 					tdsdump_log(TDS_DBG_FUNC, "ct_cancel() command state READY/IDLE\n");
 					break;
 				case _CS_COMMAND_SENT:
-					tdsdump_log(TDS_DBG_FUNC, "ct_cancel() command state SENT results_state %d\n", cmd->results_state);
+					tdsdump_log(TDS_DBG_FUNC, "ct_cancel() command state SENT results_state %d\n",
+								   cmd->results_state);
 					if (cmd->results_state != _CS_RES_NONE) {
 						tdsdump_log(TDS_DBG_FUNC, "ct_cancel() sending a cancel \n");
 						tds_send_cancel(cmd_conn->tds_socket);
@@ -2242,6 +2220,7 @@ ct_cancel(CS_CONNECTION * conn, CS_COMMAND * cmd, CS_INT type)
 					tds_send_cancel(cmd_conn->tds_socket);
 					tds_process_cancel(cmd_conn->tds_socket);
 					_ct_initialise_cmd(cmd);
+					cmd->cancel_state = _CS_CANCEL_PENDING;
 					break;
 			}
 		}
@@ -2263,6 +2242,7 @@ ct_cancel(CS_CONNECTION * conn, CS_COMMAND * cmd, CS_INT type)
 						tds_send_cancel(conn->tds_socket);
 						tds_process_cancel(conn->tds_socket);
 						_ct_initialise_cmd(conn_cmd);
+						conn_cmd->cancel_state = _CS_CANCEL_PENDING;
 					break;
 				}
 			}
@@ -2277,6 +2257,8 @@ static CS_RETCODE
 _ct_cancel_cleanup(CS_COMMAND * cmd)
 {
 	CS_CONNECTION * con;
+
+	tdsdump_log(TDS_DBG_FUNC, "_ct_cancel_cleanup(%p)\n", cmd);
 
 	con = cmd->con;
 
@@ -2297,7 +2279,7 @@ ct_describe(CS_COMMAND * cmd, CS_INT item, CS_DATAFMT * datafmt)
 	TDSCOLUMN *curcol;
 	int len;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_describe()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_describe(%p, %d, %p)\n", cmd, item, datafmt);
 
 	if (!cmd->con || !cmd->con->tds_socket)
 		return CS_FAIL;
@@ -2317,11 +2299,13 @@ ct_describe(CS_COMMAND * cmd, CS_INT item, CS_DATAFMT * datafmt)
 	datafmt->name[len] = 0;
 	datafmt->namelen = len;
 	/* need to turn the SYBxxx into a CS_xxx_TYPE */
-	datafmt->datatype = _ct_get_client_type(curcol->column_type, curcol->column_usertype, curcol->column_size);
+	datafmt->datatype = _ct_get_client_type(curcol);
 	tdsdump_log(TDS_DBG_INFO1, "ct_describe() datafmt->datatype = %d server type %d\n", datafmt->datatype,
 		    curcol->column_type);
-	/* FIXME is ok this value for numeric/decimal? */
-	datafmt->maxlength = curcol->column_size;
+	if (is_numeric_type(curcol->column_type))
+		datafmt->maxlength = sizeof(CS_NUMERIC);
+	else
+		datafmt->maxlength = curcol->column_size;
 	datafmt->usertype = curcol->column_usertype;
 	datafmt->precision = curcol->column_prec;
 	datafmt->scale = curcol->column_scale;
@@ -2335,7 +2319,13 @@ ct_describe(CS_COMMAND * cmd, CS_INT item, CS_DATAFMT * datafmt)
 		datafmt->status |= CS_CANBENULL;
 	if (curcol->column_identity)
 		datafmt->status |= CS_IDENTITY;
-	if (strcmp(datafmt->name, "txts") == 0)
+	if (curcol->column_writeable)
+		datafmt->status |= CS_UPDATABLE;
+	if (curcol->column_key)
+		datafmt->status |= CS_KEY;
+	if (curcol->column_hidden)
+		datafmt->status |= CS_HIDDEN;
+	if (curcol->column_timestamp)
 		datafmt->status |= CS_TIMESTAMP;
 
 	datafmt->count = 1;
@@ -2353,7 +2343,7 @@ ct_res_info(CS_COMMAND * cmd, CS_INT type, CS_VOID * buffer, CS_INT buflen, CS_I
 	CS_INT int_val;
 	int i;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_res_info()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_res_info(%p, %d, %p, %d, %p)\n", cmd, type, buffer, buflen, out_len);
 
 	if (!cmd->con || !cmd->con->tds_socket)
 		return CS_FAIL;
@@ -2395,6 +2385,8 @@ ct_config(CS_CONTEXT * ctx, CS_INT action, CS_INT property, CS_VOID * buffer, CS
 {
 	CS_RETCODE ret = CS_SUCCEED;
 	CS_INT *buf = (CS_INT *) buffer;
+
+	tdsdump_log(TDS_DBG_FUNC, "ct_config(%p, %d, %d, %p, %d, %p)\n", ctx, action, property, buffer, buflen, outlen);
 
 	tdsdump_log(TDS_DBG_FUNC, "ct_config() action = %s property = %d\n",
 		    CS_GET ? "CS_GET" : CS_SET ? "CS_SET" : CS_SUPPORTED ? "CS_SUPPORTED" : "CS_CLEAR", property);
@@ -2481,6 +2473,8 @@ ct_cmd_props(CS_COMMAND * cmd, CS_INT action, CS_INT property, CS_VOID * buffer,
 	TDSSOCKET *tds;
 	TDSCURSOR *cursor;
 	int maxcp;
+
+	tdsdump_log(TDS_DBG_FUNC, "ct_cmd_props(%p, %d, %d, %p, %d, %p)\n", cmd, action, property, buffer, buflen, outlen);
 
 	if (!cmd->con || !cmd->con->tds_socket)
 		return CS_FAIL;
@@ -2573,6 +2567,8 @@ ct_compute_info(CS_COMMAND * cmd, CS_INT type, CS_INT colnum, CS_VOID * buffer, 
 	TDS_SMALLINT *src_by_col_ptr;
 	int i;
 
+	tdsdump_log(TDS_DBG_FUNC, "ct_compute_info(%p, %d, %d, %p, %d, %p)\n", cmd, type, colnum, buffer, buflen, outlen);
+
 	tdsdump_log(TDS_DBG_FUNC, "ct_compute_info() type = %d, colnum = %d\n", type, colnum);
 
 	if (!cmd->con || !cmd->con->tds_socket)
@@ -2655,6 +2651,8 @@ ct_get_data(CS_COMMAND * cmd, CS_INT item, CS_VOID * buffer, CS_INT buflen, CS_I
 	unsigned char *src;
 	TDS_INT srclen;
 
+	tdsdump_log(TDS_DBG_FUNC, "ct_get_data(%p, %d, %p, %d, %p)\n", cmd, item, buffer, buflen, outlen);
+
 	tdsdump_log(TDS_DBG_FUNC, "ct_get_data() item = %d buflen = %d\n", item, buflen);
 
 	if (cmd->cancel_state == _CS_CANCEL_PENDING) {
@@ -2693,7 +2691,7 @@ ct_get_data(CS_COMMAND * cmd, CS_INT item, CS_VOID * buffer, CS_INT buflen, CS_I
 		curcol = resinfo->columns[item - 1];
 
 		src = curcol->column_data;
-		if (is_blob_type(curcol->column_type)) {
+		if (is_blob_col(curcol)) {
 			blob = (TDSBLOB *) src;
 			src = (unsigned char *) blob->textvalue;
 		}
@@ -2733,7 +2731,7 @@ ct_get_data(CS_COMMAND * cmd, CS_INT item, CS_VOID * buffer, CS_INT buflen, CS_I
 		/* get at the source data */
 		curcol = resinfo->columns[item - 1];
 		src = curcol->column_data;
-		if (is_blob_type(curcol->column_type))
+		if (is_blob_col(curcol))
 			src = (unsigned char *) ((TDSBLOB *) src)->textvalue;
 
 	}
@@ -2772,7 +2770,6 @@ CS_RETCODE
 ct_send_data(CS_COMMAND * cmd, CS_VOID * buffer, CS_INT buflen)
 {
 	TDSSOCKET *tds;
-	char writetext_cmd[512];
 
 	char textptr_string[35];	/* 16 * 2 + 2 (0x) + 1 */
 	char timestamp_string[19];	/* 8 * 2 + 2 (0x) + 1 */
@@ -2780,7 +2777,7 @@ ct_send_data(CS_COMMAND * cmd, CS_VOID * buffer, CS_INT buflen)
 	int s;
 	char hex2[3];
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_send_data()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_send_data(%p, %p, %d)\n", cmd, buffer, buflen);
 
 	if (!cmd->con || !cmd->con->tds_socket)
 		return CS_FAIL;
@@ -2819,32 +2816,16 @@ ct_send_data(CS_COMMAND * cmd, CS_VOID * buffer, CS_INT buflen)
 		}
 		*c = '\0';
 
-		/* submit the "writetext bulk" command */
-
-		sprintf(writetext_cmd, "writetext bulk %s 0x%s timestamp = 0x%s%s",
-			cmd->iodesc->name,
-			textptr_string, timestamp_string, ((cmd->iodesc->log_on_update == CS_TRUE) ? " with log" : "")
-			);
-
-		if (tds_submit_query(tds, writetext_cmd) != TDS_SUCCEED) {
-			return CS_FAIL;
-		}
-
-		/* FIXME in this case processing all results can bring state to IDLE... not threading safe */
-		/* read the end token */
-		if (tds_process_simple_query(tds) != TDS_SUCCEED)
-			return CS_FAIL;
-
-		if (tds_set_state(tds, TDS_QUERYING) != TDS_QUERYING)
+		/* submit the writetext command */
+		if (tds_writetext_start(tds, cmd->iodesc->name,
+			textptr_string, timestamp_string, (cmd->iodesc->log_on_update == CS_TRUE), cmd->iodesc->total_txtlen) != TDS_SUCCEED)
 			return CS_FAIL;
 
 		cmd->send_data_started = 1;
-		tds->out_flag = TDS_BULK;
-		tds_put_int(tds, cmd->iodesc->total_txtlen);
 	}
 
-	tds->out_flag = TDS_BULK;
-	tds_put_n(tds, buffer, buflen);
+	if (tds_writetext_continue(tds, buffer, buflen) != TDS_SUCCEED)
+		return CS_FAIL;
 
 	return CS_SUCCEED;
 }
@@ -2855,13 +2836,13 @@ ct_data_info(CS_COMMAND * cmd, CS_INT action, CS_INT colnum, CS_IODESC * iodesc)
 	TDSSOCKET *tds;
 	TDSRESULTINFO *resinfo;
 
+	tdsdump_log(TDS_DBG_FUNC, "ct_data_info(%p, %d, %d, %p)\n", cmd, action, colnum, iodesc);
+
 	if (!cmd->con || !cmd->con->tds_socket)
 		return CS_FAIL;
 
 	tds = cmd->con->tds_socket;
 	resinfo = tds->current_results;
-
-	tdsdump_log(TDS_DBG_FUNC, "ct_data_info() colnum %d\n", colnum);
 
 	switch (action) {
 	case CS_SET:
@@ -2921,156 +2902,57 @@ ct_capability(CS_CONNECTION * con, CS_INT action, CS_INT type, CS_INT capability
 	unsigned char bitmask = 0;
 	unsigned char *mask;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_capability()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_capability(%p, %d, %d, %d, %p)\n", con, action, type, capability, value);
+
 	login = (TDSLOGIN *) con->tds_login;
 	mask = login->capabilities;
 
 	if (type == CS_CAP_RESPONSE) {
 		switch (capability) {
-		case CS_DATA_NOBOUNDARY:
-			idx = 13;
-			bitmask = 0x01;
-			break;
-		case CS_RES_NOTDSDEBUG:
-			idx = 13;
-			bitmask = 0x02;
-			break;
-		case CS_RES_NOSTRIPBLANKS:
-			idx = 13;
-			bitmask = 0x04;
-			break;
-		case CS_DATA_NOINT8:
-			idx = 13;
-			bitmask = 0x08;
-			break;
-		case CS_DATA_NOINTN:
-			idx = 14;
-			bitmask = 0x01;
-			break;
-		case CS_DATA_NODATETIMEN:
-			idx = 14;
-			bitmask = 0x02;
-			break;
-		case CS_DATA_NOMONEYN:
-			idx = 14;
-			bitmask = 0x04;
-			break;
-		case CS_CON_NOOOB:
-			idx = 14;
-			bitmask = 0x08;
-			break;
-		case CS_CON_NOINBAND:
-			idx = 14;
-			bitmask = 0x10;
-			break;
-		case CS_PROTO_NOTEXT:
-			idx = 14;
-			bitmask = 0x20;
-			break;
-		case CS_PROTO_NOBULK:
-			idx = 14;
-			bitmask = 0x40;
-			break;
-		case CS_DATA_NOSENSITIVITY:
-			idx = 14;
-			bitmask = 0x80;
-			break;
-		case CS_DATA_NOFLT4:
-			idx = 15;
-			bitmask = 0x01;
-			break;
-		case CS_DATA_NOFLT8:
-			idx = 15;
-			bitmask = 0x02;
-			break;
-		case CS_DATA_NONUM:
-			idx = 15;
-			bitmask = 0x04;
-			break;
-		case CS_DATA_NOTEXT:
-			idx = 15;
-			bitmask = 0x08;
-			break;
-		case CS_DATA_NOIMAGE:
-			idx = 15;
-			bitmask = 0x10;
-			break;
-		case CS_DATA_NODEC:
-			idx = 15;
-			bitmask = 0x20;
-			break;
-		case CS_DATA_NOLCHAR:
-			idx = 15;
-			bitmask = 0x40;
-			break;
-		case CS_DATA_NOLBIN:
-			idx = 15;
-			bitmask = 0x80;
-			break;
-		case CS_DATA_NOCHAR:
-			idx = 16;
-			bitmask = 0x01;
-			break;
-		case CS_DATA_NOVCHAR:
-			idx = 16;
-			bitmask = 0x02;
-			break;
-		case CS_DATA_NOBIN:
-			idx = 16;
-			bitmask = 0x04;
-			break;
-		case CS_DATA_NOVBIN:
-			idx = 16;
-			bitmask = 0x08;
-			break;
-		case CS_DATA_NOMNY8:
-			idx = 16;
-			bitmask = 0x10;
-			break;
-		case CS_DATA_NOMNY4:
-			idx = 16;
-			bitmask = 0x20;
-			break;
-		case CS_DATA_NODATE8:
-			idx = 16;
-			bitmask = 0x40;
-			break;
-		case CS_DATA_NODATE4:
-			idx = 16;
-			bitmask = 0x80;
-			break;
-		case CS_RES_NOMSG:
-			idx = 17;
-			bitmask = 0x02;
-			break;
-		case CS_RES_NOEED:
-			idx = 17;
-			bitmask = 0x04;
-			break;
-		case CS_RES_NOPARAM:
-			idx = 17;
-			bitmask = 0x08;
-			break;
-		case CS_DATA_NOINT1:
-			idx = 17;
-			bitmask = 0x10;
-			break;
-		case CS_DATA_NOINT2:
-			idx = 17;
-			bitmask = 0x20;
-			break;
-		case CS_DATA_NOINT4:
-			idx = 17;
-			bitmask = 0x40;
-			break;
-		case CS_DATA_NOBIT:
-			idx = 17;
-			bitmask = 0x80;
-			break;
+		case CS_DATA_NOBOUNDARY:	idx = 13; bitmask = 0x01;	break;
+		case CS_RES_NOTDSDEBUG:		idx = 13; bitmask = 0x02;	break;
+		case CS_RES_NOSTRIPBLANKS:	idx = 13; bitmask = 0x04;	break;
+		case CS_DATA_NOINT8:		idx = 13; bitmask = 0x08;	break;
+
+		case CS_DATA_NOINTN:		idx = 14; bitmask = 0x01;	break;
+		case CS_DATA_NODATETIMEN:	idx = 14; bitmask = 0x02;	break;
+		case CS_DATA_NOMONEYN:		idx = 14; bitmask = 0x04;	break;
+		case CS_CON_NOOOB:		idx = 14; bitmask = 0x08;	break;
+		case CS_CON_NOINBAND:		idx = 14; bitmask = 0x10;	break;
+		case CS_PROTO_NOTEXT:		idx = 14; bitmask = 0x20;	break;
+		case CS_PROTO_NOBULK:		idx = 14; bitmask = 0x40;	break;
+		case CS_DATA_NOSENSITIVITY:	idx = 14; bitmask = 0x80;	break;
+
+		case CS_DATA_NOFLT4:		idx = 15; bitmask = 0x01;	break;
+		case CS_DATA_NOFLT8:		idx = 15; bitmask = 0x02;	break;
+		case CS_DATA_NONUM:		idx = 15; bitmask = 0x04;	break;
+		case CS_DATA_NOTEXT:		idx = 15; bitmask = 0x08;	break;
+		case CS_DATA_NOIMAGE:		idx = 15; bitmask = 0x10;	break;
+		case CS_DATA_NODEC:		idx = 15; bitmask = 0x20;	break;
+		case CS_DATA_NOLCHAR:		idx = 15; bitmask = 0x40;	break;
+		case CS_DATA_NOLBIN:		idx = 15; bitmask = 0x80;	break;
+
+		case CS_DATA_NOCHAR:		idx = 16; bitmask = 0x01;	break;
+		case CS_DATA_NOVCHAR:		idx = 16; bitmask = 0x02;	break;
+		case CS_DATA_NOBIN:		idx = 16; bitmask = 0x04;	break;
+		case CS_DATA_NOVBIN:		idx = 16; bitmask = 0x08;	break;
+		case CS_DATA_NOMNY8:		idx = 16; bitmask = 0x10;	break;
+		case CS_DATA_NOMNY4:		idx = 16; bitmask = 0x20;	break;
+		case CS_DATA_NODATE8:		idx = 16; bitmask = 0x40;	break;
+		case CS_DATA_NODATE4:		idx = 16; bitmask = 0x80;	break;
+
+		case CS_RES_NOMSG:		idx = 17; bitmask = 0x02;	break;
+		case CS_RES_NOEED:		idx = 17; bitmask = 0x04;	break;
+		case CS_RES_NOPARAM:		idx = 17; bitmask = 0x08;	break;
+		case CS_DATA_NOINT1:		idx = 17; bitmask = 0x10;	break;
+		case CS_DATA_NOINT2:		idx = 17; bitmask = 0x20;	break;
+		case CS_DATA_NOINT4:		idx = 17; bitmask = 0x40;	break;
+		case CS_DATA_NOBIT:		idx = 17; bitmask = 0x80;	break;
+
 		default:
 			tdsdump_log(TDS_DBG_SEVERE, "ct_capability -- attempt to set/get a non-existant capability\n");
 			return CS_FAIL;
-		}			/* end capability */
+		} /* end capability */
 
 		assert(13 <= idx && idx <= 17);
 		assert(bitmask);
@@ -3105,165 +2987,68 @@ ct_capability(CS_CONNECTION * con, CS_INT action, CS_INT type, CS_INT capability
 	 * These capabilities describe the types of requests that a server can support.
 	 */
 	switch (capability) {
-	case CS_PROTO_DYNPROC:
-		*(CS_BOOL *) value = mask[2] & 0x01 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_FLTN:
-		*(CS_BOOL *) value = mask[2] & 0x02 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_BITN:
-		*(CS_BOOL *) value = mask[2] & 0x04 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_INT8:
-		*(CS_BOOL *) value = mask[2] & 0x08 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_VOID:
-		*(CS_BOOL *) value = mask[2] & 0x10 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_CON_INBAND:
-		*(CS_BOOL *) value = mask[3] & 0x01 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_CON_LOGICAL:
-		*(CS_BOOL *) value = mask[3] & 0x02 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_PROTO_TEXT:
-		*(CS_BOOL *) value = mask[3] & 0x04 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_PROTO_BULK:
-		*(CS_BOOL *) value = mask[3] & 0x08 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_REQ_URGNOTIF:
-		*(CS_BOOL *) value = mask[3] & 0x10 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_SENSITIVITY:
-		*(CS_BOOL *) value = mask[3] & 0x20 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_BOUNDARY:
-		*(CS_BOOL *) value = mask[3] & 0x40 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_PROTO_DYNAMIC:
-		*(CS_BOOL *) value = mask[3] & 0x80 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_MONEYN:
-		*(CS_BOOL *) value = mask[4] & 0x01 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_CSR_PREV:
-		*(CS_BOOL *) value = mask[4] & 0x02 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_CSR_FIRST:
-		*(CS_BOOL *) value = mask[4] & 0x04 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_CSR_LAST:
-		*(CS_BOOL *) value = mask[4] & 0x08 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_CSR_ABS:
-		*(CS_BOOL *) value = mask[4] & 0x10 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_CSR_REL:
-		*(CS_BOOL *) value = mask[4] & 0x20 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_CSR_MULTI:
-		*(CS_BOOL *) value = mask[4] & 0x40 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_CON_OOB:
-		*(CS_BOOL *) value = mask[4] & 0x80 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_NUM:
-		*(CS_BOOL *) value = mask[5] & 0x01 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_TEXT:
-		*(CS_BOOL *) value = mask[5] & 0x02 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_IMAGE:
-		*(CS_BOOL *) value = mask[5] & 0x04 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_DEC:
-		*(CS_BOOL *) value = mask[5] & 0x08 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_LCHAR:
-		*(CS_BOOL *) value = mask[5] & 0x10 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_LBIN:
-		*(CS_BOOL *) value = mask[5] & 0x20 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_INTN:
-		*(CS_BOOL *) value = mask[5] & 0x40 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_DATETIMEN:
-		*(CS_BOOL *) value = mask[5] & 0x80 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_BIN:
-		*(CS_BOOL *) value = mask[6] & 0x01 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_VBIN:
-		*(CS_BOOL *) value = mask[6] & 0x02 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_MNY8:
-		*(CS_BOOL *) value = mask[6] & 0x04 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_MNY4:
-		*(CS_BOOL *) value = mask[6] & 0x08 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_DATE8:
-		*(CS_BOOL *) value = mask[6] & 0x10 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_DATE4:
-		*(CS_BOOL *) value = mask[6] & 0x20 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_FLT4:
-		*(CS_BOOL *) value = mask[6] & 0x40 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_FLT8:
-		*(CS_BOOL *) value = mask[6] & 0x80 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_REQ_MSG:
-		*(CS_BOOL *) value = mask[7] & 0x01 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_REQ_PARAM:
-		*(CS_BOOL *) value = mask[7] & 0x02 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_INT1:
-		*(CS_BOOL *) value = mask[7] & 0x04 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_INT2:
-		*(CS_BOOL *) value = mask[7] & 0x08 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_INT4:
-		*(CS_BOOL *) value = mask[7] & 0x10 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_BIT:
-		*(CS_BOOL *) value = mask[7] & 0x20 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_CHAR:
-		*(CS_BOOL *) value = mask[7] & 0x40 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_DATA_VCHAR:
-		*(CS_BOOL *) value = mask[7] & 0x80 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_REQ_LANG:
-		*(CS_BOOL *) value = mask[8] & 0x02 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_REQ_RPC:
-		*(CS_BOOL *) value = mask[8] & 0x04 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_REQ_NOTIF:
-		*(CS_BOOL *) value = mask[8] & 0x08 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_REQ_MSTMT:
-		*(CS_BOOL *) value = mask[8] & 0x10 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_REQ_BCP:
-		*(CS_BOOL *) value = mask[8] & 0x20 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_REQ_CURSOR:
-		*(CS_BOOL *) value = mask[8] & 0x40 ? CS_TRUE : CS_FALSE;
-		break;
-	case CS_REQ_DYN:
-		*(CS_BOOL *) value = mask[8] & 0x80 ? CS_TRUE : CS_FALSE;
-		break;
+	case CS_PROTO_DYNPROC:		*(CS_BOOL *) value = mask[2] & 0x01 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_FLTN:		*(CS_BOOL *) value = mask[2] & 0x02 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_BITN:		*(CS_BOOL *) value = mask[2] & 0x04 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_INT8:		*(CS_BOOL *) value = mask[2] & 0x08 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_VOID:		*(CS_BOOL *) value = mask[2] & 0x10 ? CS_TRUE : CS_FALSE;	break;
+
+	case CS_CON_INBAND:		*(CS_BOOL *) value = mask[3] & 0x01 ? CS_TRUE : CS_FALSE;	break;
+	case CS_CON_LOGICAL:		*(CS_BOOL *) value = mask[3] & 0x02 ? CS_TRUE : CS_FALSE;	break;
+	case CS_PROTO_TEXT:		*(CS_BOOL *) value = mask[3] & 0x04 ? CS_TRUE : CS_FALSE;	break;
+	case CS_PROTO_BULK:		*(CS_BOOL *) value = mask[3] & 0x08 ? CS_TRUE : CS_FALSE;	break;
+	case CS_REQ_URGNOTIF:		*(CS_BOOL *) value = mask[3] & 0x10 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_SENSITIVITY:	*(CS_BOOL *) value = mask[3] & 0x20 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_BOUNDARY:		*(CS_BOOL *) value = mask[3] & 0x40 ? CS_TRUE : CS_FALSE;	break;
+	case CS_PROTO_DYNAMIC:		*(CS_BOOL *) value = mask[3] & 0x80 ? CS_TRUE : CS_FALSE;	break;
+
+	case CS_DATA_MONEYN:		*(CS_BOOL *) value = mask[4] & 0x01 ? CS_TRUE : CS_FALSE;	break;
+	case CS_CSR_PREV:		*(CS_BOOL *) value = mask[4] & 0x02 ? CS_TRUE : CS_FALSE;	break;
+	case CS_CSR_FIRST:		*(CS_BOOL *) value = mask[4] & 0x04 ? CS_TRUE : CS_FALSE;	break;
+	case CS_CSR_LAST:		*(CS_BOOL *) value = mask[4] & 0x08 ? CS_TRUE : CS_FALSE;	break;
+	case CS_CSR_ABS:		*(CS_BOOL *) value = mask[4] & 0x10 ? CS_TRUE : CS_FALSE;	break;
+	case CS_CSR_REL:		*(CS_BOOL *) value = mask[4] & 0x20 ? CS_TRUE : CS_FALSE;	break;
+	case CS_CSR_MULTI:		*(CS_BOOL *) value = mask[4] & 0x40 ? CS_TRUE : CS_FALSE;	break;
+	case CS_CON_OOB:		*(CS_BOOL *) value = mask[4] & 0x80 ? CS_TRUE : CS_FALSE;	break;
+
+	case CS_DATA_NUM:		*(CS_BOOL *) value = mask[5] & 0x01 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_TEXT:		*(CS_BOOL *) value = mask[5] & 0x02 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_IMAGE:		*(CS_BOOL *) value = mask[5] & 0x04 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_DEC:		*(CS_BOOL *) value = mask[5] & 0x08 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_LCHAR:		*(CS_BOOL *) value = mask[5] & 0x10 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_LBIN:		*(CS_BOOL *) value = mask[5] & 0x20 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_INTN:		*(CS_BOOL *) value = mask[5] & 0x40 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_DATETIMEN:		*(CS_BOOL *) value = mask[5] & 0x80 ? CS_TRUE : CS_FALSE;	break;
+
+	case CS_DATA_BIN:		*(CS_BOOL *) value = mask[6] & 0x01 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_VBIN:		*(CS_BOOL *) value = mask[6] & 0x02 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_MNY8:		*(CS_BOOL *) value = mask[6] & 0x04 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_MNY4:		*(CS_BOOL *) value = mask[6] & 0x08 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_DATE8:		*(CS_BOOL *) value = mask[6] & 0x10 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_DATE4:		*(CS_BOOL *) value = mask[6] & 0x20 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_FLT4:		*(CS_BOOL *) value = mask[6] & 0x40 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_FLT8:		*(CS_BOOL *) value = mask[6] & 0x80 ? CS_TRUE : CS_FALSE;	break;
+
+	case CS_REQ_MSG:		*(CS_BOOL *) value = mask[7] & 0x01 ? CS_TRUE : CS_FALSE;	break;
+	case CS_REQ_PARAM:		*(CS_BOOL *) value = mask[7] & 0x02 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_INT1:		*(CS_BOOL *) value = mask[7] & 0x04 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_INT2:		*(CS_BOOL *) value = mask[7] & 0x08 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_INT4:		*(CS_BOOL *) value = mask[7] & 0x10 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_BIT:		*(CS_BOOL *) value = mask[7] & 0x20 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_CHAR:		*(CS_BOOL *) value = mask[7] & 0x40 ? CS_TRUE : CS_FALSE;	break;
+	case CS_DATA_VCHAR:		*(CS_BOOL *) value = mask[7] & 0x80 ? CS_TRUE : CS_FALSE;	break;
+
+	case CS_REQ_LANG:		*(CS_BOOL *) value = mask[8] & 0x02 ? CS_TRUE : CS_FALSE;	break;
+	case CS_REQ_RPC:		*(CS_BOOL *) value = mask[8] & 0x04 ? CS_TRUE : CS_FALSE;	break;
+	case CS_REQ_NOTIF:		*(CS_BOOL *) value = mask[8] & 0x08 ? CS_TRUE : CS_FALSE;	break;
+	case CS_REQ_MSTMT:		*(CS_BOOL *) value = mask[8] & 0x10 ? CS_TRUE : CS_FALSE;	break;
+	case CS_REQ_BCP:		*(CS_BOOL *) value = mask[8] & 0x20 ? CS_TRUE : CS_FALSE;	break;
+	case CS_REQ_CURSOR:		*(CS_BOOL *) value = mask[8] & 0x40 ? CS_TRUE : CS_FALSE;	break;
+	case CS_REQ_DYN:		*(CS_BOOL *) value = mask[8] & 0x80 ? CS_TRUE : CS_FALSE;	break;
+
 	default:
 		tdsdump_log(TDS_DBG_SEVERE, "ct_capability -- attempt to get a non-existant capability\n");
-		return CS_FAIL;
+		return CS_FAIL;	
 		break;
 	}			/* end capability */
 
@@ -3279,7 +3064,7 @@ ct_capability(CS_CONNECTION * con, CS_INT action, CS_INT type, CS_INT capability
 	tdsdump_log(TDS_DBG_SEVERE, "ct_capability -- attempt to set a read-only capability (type %d, action %d)\n",
 		type, action);
 	return CS_FAIL;
-}				/* end ct_capability( */
+} /* end ct_capability */
 
 
 CS_RETCODE
@@ -3289,13 +3074,14 @@ ct_dynamic(CS_COMMAND * cmd, CS_INT type, CS_CHAR * id, CS_INT idlen, CS_CHAR * 
 	CS_CONNECTION *con;
 	CS_DYNAMIC *dyn;
 
+	tdsdump_log(TDS_DBG_FUNC, "ct_dynamic(%p, %d, %p, %d, %p, %d)\n", cmd, type, id, idlen, buffer, buflen);
+
 	if (!cmd->con)
 		return CS_FAIL;
 
 	cmd->command_type = CS_DYNAMIC_CMD;
 	cmd->dynamic_cmd = type;
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_dynamic(%d)\n", type);
 	con = cmd->con;
 
 	switch (type) {
@@ -3354,8 +3140,8 @@ ct_param(CS_COMMAND * cmd, CS_DATAFMT * datafmt, CS_VOID * data, CS_INT datalen,
 	CS_PARAM **pparam;
 	CS_PARAM *param;
 
+	tdsdump_log(TDS_DBG_FUNC, "ct_param(%p, %p, %p, %d, %hd)\n", cmd, datafmt, data, datalen, indicator);
 
-	tdsdump_log(TDS_DBG_FUNC, "ct_param()\n");
 	tdsdump_log(TDS_DBG_INFO1, "ct_param() data addr = %p data length = %d\n", data, datalen);
 
 	if (cmd == NULL)
@@ -3368,10 +3154,9 @@ ct_param(CS_COMMAND * cmd, CS_DATAFMT * datafmt, CS_VOID * data, CS_INT datalen,
 			return CS_FAIL;
 		}
 
-		param = (CSREMOTE_PROC_PARAM *) malloc(sizeof(CSREMOTE_PROC_PARAM));
+		param = (CSREMOTE_PROC_PARAM *) calloc(1, sizeof(CSREMOTE_PROC_PARAM));
 		if (!param)
 			return CS_FAIL;
-		memset(param, 0, sizeof(CSREMOTE_PROC_PARAM));
 
 		if (CS_SUCCEED != _ct_fill_param(cmd->command_type, param, datafmt, data, &datalen, &indicator, 1)) {
 			tdsdump_log(TDS_DBG_INFO1, "ct_param() failed to add rpc param\n");
@@ -3398,8 +3183,7 @@ ct_param(CS_COMMAND * cmd, CS_DATAFMT * datafmt, CS_VOID * data, CS_INT datalen,
 			return CS_FAIL;
 		}
 
-		param = (CSREMOTE_PROC_PARAM *) malloc(sizeof(CSREMOTE_PROC_PARAM));
-		memset(param, 0, sizeof(CSREMOTE_PROC_PARAM));
+		param = (CSREMOTE_PROC_PARAM *) calloc(1, sizeof(CSREMOTE_PROC_PARAM));
 
 		if (CS_SUCCEED != _ct_fill_param(cmd->command_type, param, datafmt, data, &datalen, &indicator, 1)) {
 			free(param);
@@ -3424,10 +3208,9 @@ ct_param(CS_COMMAND * cmd, CS_DATAFMT * datafmt, CS_VOID * data, CS_INT datalen,
 			return CS_FAIL;
 		}
 
-		param = (CS_DYNAMIC_PARAM *) malloc(sizeof(CS_DYNAMIC_PARAM));
+		param = (CS_DYNAMIC_PARAM *) calloc(1, sizeof(CS_DYNAMIC_PARAM));
 		if (!param)
 			return CS_FAIL;
-		memset(param, 0, sizeof(CS_DYNAMIC_PARAM));
 
 		if (CS_SUCCEED != _ct_fill_param(cmd->command_type, param, datafmt, data, &datalen, &indicator, 1)) {
 			tdsdump_log(TDS_DBG_INFO1, "ct_param() failed to add CS_DYNAMIC param\n");
@@ -3456,6 +3239,8 @@ ct_setparam(CS_COMMAND * cmd, CS_DATAFMT * datafmt, CS_VOID * data, CS_INT * dat
 	CS_PARAM *param;
 	CS_DYNAMIC *dyn;
 
+	tdsdump_log(TDS_DBG_FUNC, "ct_setparam(%p, %p, %p, %p, %p)\n", cmd, datafmt, data, datalen, indicator);
+
 	tdsdump_log(TDS_DBG_FUNC, "ct_setparam() command type = %d, data type = %d\n", cmd->command_type, datafmt->datatype);
 
 	/* Code changed for RPC functionality - SUHA */
@@ -3473,8 +3258,7 @@ ct_setparam(CS_COMMAND * cmd, CS_DATAFMT * datafmt, CS_VOID * data, CS_INT * dat
 			return CS_FAIL;
 		}
 
-		param = (CSREMOTE_PROC_PARAM *) malloc(sizeof(CSREMOTE_PROC_PARAM));
-		memset(param, 0, sizeof(CSREMOTE_PROC_PARAM));
+		param = (CSREMOTE_PROC_PARAM *) calloc(1, sizeof(CSREMOTE_PROC_PARAM));
 
 		if (CS_SUCCEED != _ct_fill_param(cmd->command_type, param, datafmt, data, datalen, indicator, 0)) {
 			tdsdump_log(TDS_DBG_INFO1, "ct_setparam() failed to add rpc param\n");
@@ -3506,8 +3290,7 @@ ct_setparam(CS_COMMAND * cmd, CS_DATAFMT * datafmt, CS_VOID * data, CS_INT * dat
 			return CS_FAIL;
 		}
 
-		param = (CS_DYNAMIC_PARAM *) malloc(sizeof(CS_DYNAMIC_PARAM));
-		memset(param, 0, sizeof(CS_DYNAMIC_PARAM));
+		param = (CS_DYNAMIC_PARAM *) calloc(1, sizeof(CS_DYNAMIC_PARAM));
 
 		if (CS_SUCCEED != _ct_fill_param(cmd->command_type, param, datafmt, data, datalen, indicator, 0)) {
 			tdsdump_log(TDS_DBG_INFO1, "ct_setparam() failed to add dynamic param\n");
@@ -3538,8 +3321,7 @@ ct_setparam(CS_COMMAND * cmd, CS_DATAFMT * datafmt, CS_VOID * data, CS_INT * dat
 			return CS_FAIL;
 		}
 
-		param = (CSREMOTE_PROC_PARAM *) malloc(sizeof(CSREMOTE_PROC_PARAM));
-		memset(param, 0, sizeof(CSREMOTE_PROC_PARAM));
+		param = (CSREMOTE_PROC_PARAM *) calloc(1, sizeof(CSREMOTE_PROC_PARAM));
 
 		if (CS_SUCCEED != _ct_fill_param(cmd->command_type, param, datafmt, data, datalen, indicator, 0)) {
 			tdsdump_log(TDS_DBG_INFO1, "ct_setparam() failed to add language param\n");
@@ -3596,6 +3378,8 @@ ct_options(CS_CONNECTION * con, CS_INT action, CS_INT option, CS_VOID * param, C
 		, { CS_OPT_STATS_IO,       TDS_OPT_STAT_IO        }
 		, { CS_OPT_STATS_TIME,     TDS_OPT_STAT_TIME      }
 	};
+
+	tdsdump_log(TDS_DBG_FUNC, "ct_options(%p, %d, %d, %p, %d, %p)\n", con, action, option, param, paramlen, outlen);
 
 	if (param == NULL)
 		return CS_FAIL;
@@ -3826,7 +3610,8 @@ ct_options(CS_CONNECTION * con, CS_INT action, CS_INT option, CS_VOID * param, C
 SEND_OPTION:
 
 	tdsdump_log(TDS_DBG_FUNC, "\ttds_submit_optioncmd will be action(%s) option(%d) arg(%x) arglen(%d)\n",
-				action_string, tds_option, tds_argsize == 1 ? tds_argument.ti : (tds_argsize == 4 ? tds_argument.i : 0), tds_argsize);
+				action_string, tds_option, 
+				tds_argsize == 1 ? tds_argument.ti : (tds_argsize == 4 ? tds_argument.i : 0), tds_argsize);
 
 	if (tds_submit_optioncmd(tds, tds_command, tds_option, &tds_argument, tds_argsize) == TDS_FAIL) {
 		return CS_FAIL;
@@ -3881,6 +3666,9 @@ ct_poll(CS_CONTEXT * ctx, CS_CONNECTION * connection, CS_INT milliseconds, CS_CO
 	CS_INT * compid, CS_INT * compstatus)
 {
 	tdsdump_log(TDS_DBG_FUNC, "UNIMPLEMENTED ct_poll()\n");
+	tdsdump_log(TDS_DBG_FUNC, "ct_poll(%p, %p, %d, %p, %p, %p, %p)\n", 
+				ctx, connection, milliseconds, compconn, compcmd, compid, compstatus);
+
 	return CS_FAIL;
 }
 
@@ -3889,6 +3677,8 @@ ct_cursor(CS_COMMAND * cmd, CS_INT type, CS_CHAR * name, CS_INT namelen, CS_CHAR
 {
 	TDSSOCKET *tds;
 	TDSCURSOR *cursor;
+
+	tdsdump_log(TDS_DBG_FUNC, "ct_cursor(%p, %d, %p, %d, %p, %d, %d)\n", cmd, type, name, namelen, text, tlen, option);
 
 	if (!cmd->con || !cmd->con->tds_socket)
 		return CS_FAIL;
@@ -4018,6 +3808,8 @@ ct_cursor(CS_COMMAND * cmd, CS_INT type, CS_CHAR * name, CS_INT namelen, CS_CHAR
 static int
 _ct_fetchable_results(CS_COMMAND * cmd)
 {
+	tdsdump_log(TDS_DBG_FUNC, "_ct_fetchable_results(%p)\n", cmd);
+
 	switch (cmd->curr_result_type) {
 	case CS_COMPUTE_RESULT:
 	case CS_CURSOR_RESULT:
@@ -4036,8 +3828,9 @@ _ct_process_return_status(TDSSOCKET * tds)
 	TDSCOLUMN *curcol;
 	TDS_INT saved_status;
 
-	enum
-	{ num_cols = 1 };
+	enum { num_cols = 1 };
+
+	tdsdump_log(TDS_DBG_FUNC, "_ct_process_return_status(%p)\n", tds);
 
 	assert(tds);
 	saved_status = tds->ret_status;
@@ -4077,18 +3870,28 @@ paramrowalloc(TDSPARAMINFO * params, TDSCOLUMN * curcol, int param_num, void *va
 	const void *row = tds_alloc_param_data(curcol);
 
 	tdsdump_log(TDS_DBG_INFO1, "paramrowalloc, size = %d, data = %p, row_size = %d\n",
-				size, curcol->column_data,
-				params->row_size);
+				size, curcol->column_data, params->row_size);
 	if (!row)
 		return NULL;
 
-	if (size > 0 && value) {
+	if (value) {
 		/* TODO check for BLOB and numeric */
-		if (size > curcol->column_size)
+		if (size > curcol->column_size) {
+			tdsdump_log(TDS_DBG_FUNC, "paramrowalloc(): RESIZE %d to %d\n", size, curcol->column_size);
 			size = curcol->column_size;
+		}
 		/* TODO blobs */
-		if (!is_blob_type(curcol->column_type))
+		if (!is_blob_col(curcol))
 			memcpy(curcol->column_data, value, size);
+		else {
+			TDSBLOB *blob = (TDSBLOB *) curcol->column_data;
+			blob->textvalue = malloc(size);
+			tdsdump_log(TDS_DBG_FUNC, "blob parameter supported, size %d textvalue pointer is %p\n",
+					size, blob->textvalue);
+			if (!blob->textvalue)
+				return NULL;
+			memcpy(blob->textvalue, value, size);
+		}
 		curcol->column_cur_size = size;
 	} else {
 		tdsdump_log(TDS_DBG_FUNC, "paramrowalloc(): setting parameter #%d to NULL\n", param_num);
@@ -4109,11 +3912,11 @@ paraminfoalloc(TDSSOCKET * tds, CS_PARAM * first_param)
 	TDSCOLUMN *pcol;
 	TDSPARAMINFO *params = NULL;
 
-	int temp_type;
+	int temp_type, tds_type;
 	CS_BYTE *temp_value;
 	CS_INT temp_datalen;
-	int param_is_null;
 
+	tdsdump_log(TDS_DBG_FUNC, "paraminfoalloc(%p, %p)\n", tds, first_param);
 
 	/* sanity */
 	if (first_param == NULL)
@@ -4127,80 +3930,58 @@ paraminfoalloc(TDSSOCKET * tds, CS_PARAM * first_param)
 			return NULL;
 		}
 
-		/* The parameteter data has been passed by reference */
-		/* i.e. using ct_setparam rather than ct_param       */
-
+		/*
+		 * The parameteter data has been passed by reference
+		 * i.e. using ct_setparam rather than ct_param
+		 */
+		temp_type = p->datatype;
+		tds_type = _ct_get_server_type(p->datatype);
 		if (p->param_by_value == 0) {
 
-			param_is_null = 0;
 			temp_datalen = 0;
 			temp_value = NULL;
-			temp_type = p->type;
 
 			/* here's one way of passing a null parameter */
 
 			if (*(p->ind) == -1) {
 				temp_value = NULL;
 				temp_datalen = 0;
-				param_is_null = 1;
 			} else {
 
 				/* and here's another... */
 				if ((*(p->datalen) == 0 || *(p->datalen) == CS_UNUSED) && p->value == NULL) {
 					temp_value = NULL;
 					temp_datalen = 0;
-					param_is_null = 1;
 				} else {
 
 					/* datafmt.datalen is ignored for fixed length types */
 
-					if (is_fixed_type(temp_type)) {
-						temp_datalen = tds_get_size_by_type(temp_type);
+					if (is_fixed_type(tds_type)) {
+						temp_datalen = tds_get_size_by_type(tds_type);
 					} else {
 						temp_datalen = (*(p->datalen) == CS_UNUSED) ? 0 : *(p->datalen);
 					}
 
-					if (temp_datalen && p->value) {
+					if (p->value) {
 						temp_value = p->value;
 					} else {
 						temp_value = NULL;
 						temp_datalen = 0;
-						param_is_null = 1;
 					}
 				}
 			}
-
-			if (param_is_null) {
-				switch (temp_type) {
-				case SYBINT1:
-				case SYBINT2:
-				case SYBINT4:
-				/* TODO check if supported ?? */
-				case SYBINT8:
-					temp_type = SYBINTN;
-					break;
-				case SYBDATETIME:
-				case SYBDATETIME4:
-					temp_type = SYBDATETIMN;
-					break;
-				case SYBFLT8:
-					temp_type = SYBFLTN;
-					break;
-				case SYBBIT:
-					temp_type = SYBBITN;
-					break;
-				case SYBMONEY:
-				case SYBMONEY4:
-					temp_type = SYBMONEYN;
-					break;
-				default:
-					break;
-				}
-			}
 		} else {
-			temp_type = p->type;
 			temp_value = p->value;
 			temp_datalen = *(p->datalen);
+		}
+
+		if (temp_type == CS_VARCHAR_TYPE || temp_type == CS_VARBINARY_TYPE) {
+			CS_VARCHAR *vc = (CS_VARCHAR *) temp_value;
+
+			if (vc) {
+				temp_datalen = vc->len;
+				temp_value   = (CS_BYTE *) vc->str;
+			}
 		}
 
 		pcol = params->columns[i];
@@ -4212,7 +3993,7 @@ paraminfoalloc(TDSSOCKET * tds, CS_PARAM * first_param)
 			pcol->column_namelen = strlen(pcol->column_name);
 		}
 
-		tds_set_param_type(tds, pcol, temp_type);
+		tds_set_param_type(tds, pcol, tds_type);
 
 		if (temp_datalen == CS_NULLTERM && temp_value)
 			temp_datalen = strlen((const char*) temp_value);
@@ -4223,7 +4004,7 @@ paraminfoalloc(TDSSOCKET * tds, CS_PARAM * first_param)
 			if (p->maxlen < 0)
 				return NULL;
 			pcol->on_server.column_size = pcol->column_size = p->maxlen;
-			pcol->column_cur_size = temp_datalen;
+			pcol->column_cur_size = temp_value ? temp_datalen : -1;
 			if (temp_datalen > 0 && temp_datalen > p->maxlen)
 				pcol->on_server.column_size = pcol->column_size = temp_datalen;
 		} else {
@@ -4238,7 +4019,8 @@ paraminfoalloc(TDSSOCKET * tds, CS_PARAM * first_param)
 		/* actual data */
 		tdsdump_log(TDS_DBG_FUNC, "paraminfoalloc: status = %d, maxlen %d \n", p->status, p->maxlen);
 		tdsdump_log(TDS_DBG_FUNC,
-			    "paraminfoalloc: name = %*.*s, varint size %d column_type %d size %d, %d column_cur_size %d column_output = %d\n",
+			    "paraminfoalloc: name = %*.*s, varint size %d "
+			    "column_type %d size %d, %d column_cur_size %d column_output = %d\n",
 			    pcol->column_namelen, pcol->column_namelen, pcol->column_name,
 			    pcol->column_varint_size, pcol->column_type,
 			    pcol->on_server.column_size, pcol->column_size,
@@ -4257,6 +4039,8 @@ paraminfoalloc(TDSSOCKET * tds, CS_PARAM * first_param)
 static void
 rpc_clear(CSREMOTE_PROC * rpc)
 {
+	tdsdump_log(TDS_DBG_FUNC, "rpc_clear(%p)\n", rpc);
+
 	if (rpc == NULL)
 		return;
 
@@ -4272,6 +4056,8 @@ rpc_clear(CSREMOTE_PROC * rpc)
 static void
 param_clear(CS_PARAM * pparam)
 {
+	tdsdump_log(TDS_DBG_FUNC, "param_clear(%p)\n", pparam);
+
 	if (pparam == NULL)
 		return;
 
@@ -4298,9 +4084,13 @@ param_clear(CS_PARAM * pparam)
 
 
 static int
-_ct_fill_param(CS_INT cmd_type, CS_PARAM * param, CS_DATAFMT * datafmt, CS_VOID * data, CS_INT * datalen, CS_SMALLINT * indicator, CS_BYTE byvalue)
+_ct_fill_param(CS_INT cmd_type, CS_PARAM *param, CS_DATAFMT *datafmt, CS_VOID *data, CS_INT *datalen, 
+	       CS_SMALLINT *indicator, CS_BYTE byvalue)
 {
-	int param_is_null = 0;
+	int param_is_null = 0, desttype;
+
+	tdsdump_log(TDS_DBG_FUNC, "_ct_fill_param(%d, %p, %p, %p, %p, %p, %x)\n", 
+				cmd_type, param, datafmt, data, datalen, indicator, byvalue);
 
 	if (cmd_type == CS_DYNAMIC_CMD) {
 		param->name = NULL;
@@ -4310,10 +4100,9 @@ _ct_fill_param(CS_INT cmd_type, CS_PARAM * param, CS_DATAFMT * datafmt, CS_VOID 
 			if (param->name == NULL)
 				return CS_FAIL;
 		} else if (datafmt->namelen > 0) {
-			param->name = malloc(datafmt->namelen + 1);
+			param->name = calloc(1, datafmt->namelen + 1);
 			if (param->name == NULL)
 				return CS_FAIL;
-			memset(param->name, 0, datafmt->namelen + 1);
 			strncpy(param->name, datafmt->name, datafmt->namelen);
 		} else {
 			param->name = NULL;
@@ -4327,9 +4116,10 @@ _ct_fill_param(CS_INT cmd_type, CS_PARAM * param, CS_DATAFMT * datafmt, CS_VOID 
 	 * translate datafmt.datatype, e.g. CS_SMALLINT_TYPE
 	 * to Server type, e.g. SYBINT2
 	 */
-	param->type = _ct_get_server_type(datafmt->datatype);
+	desttype = _ct_get_server_type(datafmt->datatype);
+	param->datatype = datafmt->datatype;
 
-	if (is_numeric_type(param->type)) {
+	if (is_numeric_type(desttype)) {
 		param->scale = datafmt->scale;
 		param->precision = datafmt->precision;
 		if (param->scale < 0 || param->precision < 0
@@ -4339,8 +4129,8 @@ _ct_fill_param(CS_INT cmd_type, CS_PARAM * param, CS_DATAFMT * datafmt, CS_VOID 
 
 	param->maxlen = datafmt->maxlength;
 
-	if (is_fixed_type(param->type)) {
-		param->maxlen = tds_get_size_by_type(param->type);
+	if (is_fixed_type(desttype)) {
+		param->maxlen = tds_get_size_by_type(desttype);
 	}
 
 	param->param_by_value = byvalue;
@@ -4352,75 +4142,42 @@ _ct_fill_param(CS_INT cmd_type, CS_PARAM * param, CS_DATAFMT * datafmt, CS_VOID 
 		param->ind = &param->indicator_value;
 		*(param->ind) = *indicator;
 
-		/* here's one way of passing a null parameter */
-
-		if (*indicator == -1) {
+		/*
+		 * There are two ways to indicate a parameter with a null value:
+		 * - Pass indicator as -1. In this case, data and datalen are ignored.
+		 * - Pass data as NULL and datalen as 0 or CS_UNUSED
+		 */
+		if (*indicator == -1 || (data == NULL && (*datalen == 0 || *datalen == CS_UNUSED))) {
 			param->value = NULL;
 			*(param->datalen) = 0;
 			param_is_null = 1;
 		} else {
+			/* datafmt.datalen is ignored for fixed length types */
 
-			/* and here's another... */
-			if ((*datalen == 0 || *datalen == CS_UNUSED) && data == NULL) {
+			if (is_fixed_type(desttype)) {
+				*(param->datalen) = tds_get_size_by_type(desttype);
+			} else {
+				*(param->datalen) = (*datalen == CS_UNUSED) ? 0 : *datalen;
+			}
+
+			if (data) {
+				if (*(param->datalen) == CS_NULLTERM) {
+					tdsdump_log(TDS_DBG_INFO1,
+						    " _ct_fill_param() about to strdup string %u bytes long\n",
+						    (unsigned int) strlen(data));
+					*(param->datalen) = strlen(data);
+				} else if (*(param->datalen) < 0) {
+					return CS_FAIL;
+				}
+				param->value = malloc(*(param->datalen) ? *(param->datalen) : 1);
+				if (param->value == NULL)
+					return CS_FAIL;
+				memcpy(param->value, data, *(param->datalen));
+				param->param_by_value = 1;
+			} else {
 				param->value = NULL;
 				*(param->datalen) = 0;
 				param_is_null = 1;
-			} else {
-
-				/* datafmt.datalen is ignored for fixed length types */
-
-				if (is_fixed_type(param->type)) {
-					*(param->datalen) = tds_get_size_by_type(param->type);
-				} else {
-					*(param->datalen) = (*datalen == CS_UNUSED) ? 0 : *datalen;
-				}
-
-				if (*(param->datalen) && data) {
-					if (*(param->datalen) == CS_NULLTERM) {
-						tdsdump_log(TDS_DBG_INFO1, " _ct_fill_param() about to strdup string %u bytes long\n",
-							    (unsigned int) strlen(data));
-						*(param->datalen) = strlen(data);
-					} else if (*(param->datalen) < 0) {
-						return CS_FAIL;
-					}
-					param->value = malloc(*(param->datalen));
-					if (param->value == NULL)
-						return CS_FAIL;
-					memcpy(param->value, data, *(param->datalen));
-					param->param_by_value = 1;
-				} else {
-					param->value = NULL;
-					*(param->datalen) = 0;
-					param_is_null = 1;
-				}
-			}
-		}
-
-		if (param_is_null) {
-			switch (param->type) {
-			case SYBINT1:
-			case SYBINT2:
-			case SYBINT4:
-			/* TODO check if supported ?? */
-			case SYBINT8:
-				param->type = SYBINTN;
-				break;
-			case SYBDATETIME:
-			case SYBDATETIME4:
-				param->type = SYBDATETIMN;
-				break;
-			case SYBFLT8:
-				param->type = SYBFLTN;
-				break;
-			case SYBBIT:
-				param->type = SYBBITN;
-				break;
-			case SYBMONEY:
-			case SYBMONEY4:
-				param->type = SYBMONEYN;
-				break;
-			default:
-				break;
 			}
 		}
 	} else {		/* not by value, i.e. by reference */
@@ -4437,6 +4194,8 @@ _ct_fill_param(CS_INT cmd_type, CS_PARAM * param, CS_DATAFMT * datafmt, CS_VOID 
 CS_RETCODE
 ct_diag(CS_CONNECTION * conn, CS_INT operation, CS_INT type, CS_INT idx, CS_VOID * buffer)
 {
+	tdsdump_log(TDS_DBG_FUNC, "ct_diag(%p, %d, %d, %d, %p)\n", conn, operation, type, idx, buffer);
+
 	switch (operation) {
 	case CS_INIT:
 		if (conn->ctx->cs_errhandletype == _CS_ERRHAND_CB) {
@@ -4527,12 +4286,13 @@ ct_diag_storeclientmsg(CS_CONTEXT * context, CS_CONNECTION * conn, CS_CLIENTMSG 
 
 	CS_INT msg_count = 0;
 
+	tdsdump_log(TDS_DBG_FUNC, "ct_diag_storeclientmsg(%p, %p, %p)\n", context, conn, message);
+
 	curptr = &(conn->ctx->clientstore);
 
 	scurptr = &(conn->ctx->svrstore);
 
-	/* if we already have a list of messages, */
-	/* go to the end of the list...           */
+	/* if we already have a list of messages, go to the end of the list... */
 
 	while (*curptr != NULL) {
 		msg_count++;
@@ -4583,11 +4343,12 @@ ct_diag_storeservermsg(CS_CONTEXT * context, CS_CONNECTION * conn, CS_SERVERMSG 
 
 	CS_INT msg_count = 0;
 
+	tdsdump_log(TDS_DBG_FUNC, "ct_diag_storeservermsg(%p, %p, %p)\n", context, conn, message);
+
 	curptr = &(conn->ctx->svrstore);
 	ccurptr = &(conn->ctx->clientstore);
 
-	/* if we already have a list of messages, */
-	/* go to the end of the list...           */
+	/* if we already have a list of messages, go to the end of the list...  */
 
 	while (*curptr != NULL) {
 		msg_count++;
@@ -4636,10 +4397,11 @@ ct_diag_getclientmsg(CS_CONTEXT * context, CS_INT idx, CS_CLIENTMSG * message)
 	struct cs_diag_msg_client *curptr;
 	CS_INT msg_count = 0, msg_found = 0;
 
+	tdsdump_log(TDS_DBG_FUNC, "ct_diag_getclientmsg(%p, %d, %p)\n", context, idx, message);
+
 	curptr = context->clientstore;
 
-	/* if we already have a list of messages, */
-	/* go to the end of the list...           */
+	/* if we already have a list of messages, go to the end of the list...  */
 
 	while (curptr != NULL) {
 		msg_count++;
@@ -4663,10 +4425,11 @@ ct_diag_getservermsg(CS_CONTEXT * context, CS_INT idx, CS_SERVERMSG * message)
 	struct cs_diag_msg_svr *curptr;
 	CS_INT msg_count = 0, msg_found = 0;
 
+	tdsdump_log(TDS_DBG_FUNC, "ct_diag_getservermsg(%p, %d, %p)\n", context, idx, message);
+
 	curptr = context->svrstore;
 
-	/* if we already have a list of messages, */
-	/* go to the end of the list...           */
+	/* if we already have a list of messages, go to the end of the list...  */
 
 	while (curptr != NULL) {
 		msg_count++;
@@ -4690,6 +4453,8 @@ _ct_diag_clearmsg(CS_CONTEXT * context, CS_INT type)
 {
 	struct cs_diag_msg_client *curptr, *freeptr;
 	struct cs_diag_msg_svr *scurptr, *sfreeptr;
+
+	tdsdump_log(TDS_DBG_FUNC, "_ct_diag_clearmsg(%p, %d)\n", context, type);
 
 	if (type == CS_CLIENTMSG_TYPE || type == CS_ALLMSG_TYPE) {
 		curptr = context->clientstore;
@@ -4725,6 +4490,8 @@ ct_diag_countmsg(CS_CONTEXT * context, CS_INT type, CS_INT * count)
 
 	CS_INT msg_count = 0;
 
+	tdsdump_log(TDS_DBG_FUNC, "ct_diag_countmsg(%p, %d, %p)\n", context, type, count);
+
 	if (type == CS_CLIENTMSG_TYPE || type == CS_ALLMSG_TYPE) {
 		curptr = context->clientstore;
 
@@ -4756,7 +4523,9 @@ _ct_allocate_dynamic(CS_CONNECTION * con, char *id, int idlen)
 	CS_DYNAMIC **pdyn;
 	int id_len;
 
-	dyn = (CS_DYNAMIC *) malloc(sizeof(CS_DYNAMIC));
+	tdsdump_log(TDS_DBG_FUNC, "_ct_allocate_dynamic(%p, %p, %d)\n", con, id, idlen);
+
+	dyn = (CS_DYNAMIC *) calloc(1, sizeof(CS_DYNAMIC));
 
 	if (idlen == CS_NULLTERM)
 		id_len = strlen(id);
@@ -4764,7 +4533,6 @@ _ct_allocate_dynamic(CS_CONNECTION * con, char *id, int idlen)
 		id_len = idlen;
 
 	if (dyn != NULL) {
-		memset(dyn, '\0', sizeof(CS_DYNAMIC));
 		dyn->id = malloc(id_len + 1);
 		strncpy(dyn->id, id, id_len);
 		dyn->id[id_len] = '\0';
@@ -4790,6 +4558,8 @@ _ct_locate_dynamic(CS_CONNECTION * con, char *id, int idlen)
 	CS_DYNAMIC *dyn;
 	int id_len;
 
+	tdsdump_log(TDS_DBG_FUNC, "_ct_locate_dynamic(%p, %p, %d)\n", con, id, idlen);
+
 	if (idlen == CS_NULLTERM)
 		id_len = strlen(id);
 	else
@@ -4814,6 +4584,8 @@ _ct_deallocate_dynamic(CS_CONNECTION * con, CS_DYNAMIC *dyn)
 	CS_DYNAMIC_LIST *next = NULL;
 	TDSDYNAMIC *tdsdyn;
 	char myid[256];
+
+	tdsdump_log(TDS_DBG_FUNC, "_ct_deallocate_dynamic(%p, %p)\n", con, dyn);
 
 	strcpy(myid,"");
 

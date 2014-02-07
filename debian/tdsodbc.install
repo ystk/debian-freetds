@@ -1,2 +1,2 @@
-/usr/lib/odbc/*
+/usr/lib/*/odbc/*
 debian/odbcinst.ini /usr/share/tdsodbc

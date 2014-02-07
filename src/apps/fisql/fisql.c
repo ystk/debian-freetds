@@ -31,6 +31,11 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 #endif
+
+#if HAVE_LOCALE_H
+#include <locale.h>
+#endif
+
 #include <sybfront.h>
 #include <sybdb.h>
 #include "terminal.h"
@@ -175,8 +180,8 @@ get_printable_size(int type, int size)
 	case SYBMONEY4:
 		return 12;	/* FIX ME */
 	case SYBDATETIME:
-		return 26;	/* FIX ME */
 	case SYBDATETIME4:
+	case SYBDATETIMN:
 		return 26;	/* FIX ME */
 #if 0				/* seems not to be exported to sybdb.h */
 	case SYBBITN:
@@ -267,6 +272,14 @@ main(int argc, char *argv[])
 	BYTE *bylist;
 	int nby;
 	char adash;
+	const char *database_name = NULL;
+
+	setlocale(LC_ALL, "");
+
+#ifdef __VMS
+	/* Convert VMS-style arguments to Unix-style */
+	parse_vms_args(&argc, &argv);
+#endif
 
 	editor = getenv("EDITOR");
 	if (!editor) {
@@ -278,7 +291,7 @@ main(int argc, char *argv[])
 
 	opterr = 0;
 	optarg = NULL;
-	while (!errflg && (c = getopt(argc, argv, "eFgpnvXYa:c:E:h:H:i:I:J:l:m:o:P:s:S:t:U:w:y:z:A:"))
+	while (!errflg && (c = getopt(argc, argv, "eFgpnvXYa:c:D:E:h:H:i:I:J:l:m:o:P:s:S:t:U:w:y:z:A:"))
 	       != -1) {
 		switch (c) {
 		case 'e':
@@ -377,6 +390,9 @@ main(int argc, char *argv[])
 		case 'A':
 			size = atoi(optarg);
 			break;
+		case 'D':
+			database_name = optarg;
+			break;
 		default:
 			errflg++;
 			break;
@@ -385,7 +401,7 @@ main(int argc, char *argv[])
 
 	if (errflg) {
 		fprintf(stderr, "usage: fisql [-e] [-F] [-g] [-p] [-n] [-v] [-X] [-Y]\n");
-		fprintf(stderr, "\t[-a display_charset] [-c cmdend] [-E editor]\n");
+		fprintf(stderr, "\t[-a display_charset] [-c cmdend] [-D database_name] [-E editor]\n");
 		fprintf(stderr, "\t[-h headers] [-H hostname] [-i inputfile]\n");
 		fprintf(stderr, "\t[-I interfaces_file] [-J client character set]\n");
 		fprintf(stderr, "\t[-l login_timeout] [-m errorlevel]\n");
@@ -445,6 +461,8 @@ main(int argc, char *argv[])
 		DBSETLUSER(login, username);
 	}
 	DBSETLPWD(login, password);
+	memset(password, 0, strlen(password));
+
 	if (char_set) {
 		DBSETLCHARSET(login, char_set);
 	}
@@ -488,6 +506,9 @@ main(int argc, char *argv[])
 	}
 	if (perfstats) {
 		dbsetopt(dbproc, DBSTAT, "time", 0);
+	}
+	if (database_name) {
+		dbuse(dbproc, database_name);
 	}
 
 	while (1) {

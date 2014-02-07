@@ -1,5 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005  Brian Bruns
+ * Copyright (C) 2010, 2011  Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -37,18 +38,18 @@
 #include <unistd.h>
 #endif /* HAVE_UNISTD_H */
 
-#ifdef WIN32
+#ifdef _WIN32
 #include <io.h>
 #endif
 
-#include "tds.h"
-#include "tdsiconv.h"
-#include "tdsconvert.h"
-#include "replacements.h"
-#include "sybfront.h"
-#include "sybdb.h"
-#include "syberror.h"
-#include "dblib.h"
+#include <tds.h>
+#include <tdsiconv.h>
+#include <tdsconvert.h>
+#include <replacements.h>
+#include <sybfront.h>
+#include <sybdb.h>
+#include <syberror.h>
+#include <dblib.h>
 
 #ifdef DMALLOC
 #include <dmalloc.h>
@@ -57,29 +58,24 @@
 #define HOST_COL_CONV_ERROR 1
 #define HOST_COL_NULL_ERROR 2
 
-typedef enum { BCP_REC_NOFETCH_DATA = 0, BCP_REC_FETCH_DATA = 1 } BEHAVIOUR;
-
 #ifndef MAX
 #define MAX(a,b) ( (a) > (b) ? (a) : (b) )
 #endif
 
-typedef struct _pbcb
-{
-	char *pb;
-	int cb;
-	unsigned int from_malloc;
-}
-TDS_PBCB;
-
-TDS_RCSID(var, "$Id: bcp.c,v 1.171 2008/01/08 15:38:31 jklowden Exp $");
+TDS_RCSID(var, "$Id: bcp.c,v 1.197.2.8 2011/06/07 08:52:29 freddy77 Exp $");
 
 #ifdef HAVE_FSEEKO
 typedef off_t offset_type;
-#elif defined(WIN32)
+#elif defined(_WIN32) || defined(_WIN64)
 /* win32 version */
 typedef __int64 offset_type;
-#define fseeko(f,o,w) (_lseeki64(fileno(f),o,w) == -1)
-#define ftello(f) _telli64(fileno(f))
+# if defined(HAVE__FSEEKI64) && defined(HAVE__FTELLI64)
+#  define fseeko(f,o,w) _fseeki64((f),o,w)
+#  define ftello(f) _ftelli64((f))
+# else
+#  define fseeko(f,o,w) (_lseeki64(fileno(f),o,w) == -1 ? -1 : 0)
+#  define ftello(f) _telli64(fileno(f))
+# endif
 #else
 /* use old version */
 #define fseeko(f,o,w) fseek(f,o,w)
@@ -87,22 +83,68 @@ typedef __int64 offset_type;
 typedef long offset_type;
 #endif
 
-static RETCODE _bcp_send_bcp_record(DBPROCESS * dbproc, BEHAVIOUR behaviour);
-static RETCODE _bcp_build_bulk_insert_stmt(TDSSOCKET *, TDS_PBCB *, TDSCOLUMN *, int);
 static void _bcp_free_storage(DBPROCESS * dbproc);
 static void _bcp_free_columns(DBPROCESS * dbproc);
-static RETCODE _bcp_get_col_data(DBPROCESS * dbproc, TDSCOLUMN *bindcol);
-static RETCODE _bcp_send_colmetadata(DBPROCESS *);
-static RETCODE _bcp_start_copy_in(DBPROCESS *);
-static RETCODE _bcp_start_new_batch(DBPROCESS *);
+static void _bcp_null_error(TDSBCPINFO *bcpinfo, int index, int offset);
+static int _bcp_get_col_data(TDSBCPINFO *bcpinfo, TDSCOLUMN *bindcol, int offset);
+static int _bcp_no_get_col_data(TDSBCPINFO *bcpinfo, TDSCOLUMN *bindcol, int offset);
 
 static int rtrim(char *, int);
 static offset_type _bcp_measure_terminated_field(FILE * hostfile, BYTE * terminator, int term_len);
 static RETCODE _bcp_read_hostfile(DBPROCESS * dbproc, FILE * hostfile, int *row_error);
 static int _bcp_readfmt_colinfo(DBPROCESS * dbproc, char *buf, BCP_HOSTCOLINFO * ci);
-static RETCODE _bcp_get_term_var(BYTE * pdata, BYTE * term, int term_len);
+static int _bcp_get_term_var(BYTE * pdata, BYTE * term, int term_len);
 
-static void bcp_row_free(TDSRESULTINFO* result, unsigned char *row);
+/*
+ * "If a host file is being used ... the default data formats are as follows:
+ *
+ *  > The order, type, length and number of the columns in the host file are 
+ *    assumed to be identical to the order, type and number of the columns in the database table.
+ *  > If a given database column's data is fixed-length, 
+ *    then the host file's  data column will also be fixed-length. 
+ *  > If a given database column's data is variable-length or may contain null values, 
+ *    the host file's data column will be prefixed by 
+ *	a 4-byte length value for SYBTEXT and SYBIMAGE data types, and 
+ *	a 1-byte length value for all other types.
+ *  > There are no terminators of any kind between host file columns."
+ */
+
+static void
+init_hostfile_columns(DBPROCESS *dbproc)
+{
+	const int ncols = dbproc->bcpinfo->bindinfo->num_cols;
+	RETCODE erc;
+	int icol;
+	
+	if (ncols == 0)
+		return;
+		
+	if ((erc = bcp_columns(dbproc, ncols)) != SUCCEED) {
+		assert(erc == SUCCEED);
+		return;
+	}
+		
+	for (icol = 0; icol < ncols; icol++) {
+		const TDSCOLUMN *pcol = dbproc->bcpinfo->bindinfo->columns[icol];
+		int prefixlen = 0, termlen = 0;
+		
+		switch (pcol->column_type) {
+		case SYBTEXT:
+		case SYBIMAGE:
+			prefixlen = 4;
+			break;
+		default:
+			prefixlen = dbvarylen(dbproc, icol+1)? 1 : 0;
+		}
+		
+		erc = bcp_colfmt(dbproc, icol+1, pcol->column_type, prefixlen, pcol->column_size, NULL, termlen, icol+1);
+		
+		assert(erc == SUCCEED);
+		if (erc != SUCCEED)
+			return;
+	}
+}
+
 
 /** 
  * \ingroup dblib_bcp
@@ -129,12 +171,6 @@ static void bcp_row_free(TDSRESULTINFO* result, unsigned char *row);
 RETCODE
 bcp_init(DBPROCESS * dbproc, const char *tblname, const char *hfile, const char *errfile, int direction)
 {
-	TDSRESULTINFO *resinfo;
-	TDSRESULTINFO *bindinfo;
-	TDSCOLUMN *curcol;
-	TDS_INT result_type;
-	int i, rc;
-
 	tdsdump_log(TDS_DBG_FUNC, "bcp_init(%p, %s, %s, %s, %d)\n", 
 			dbproc, tblname? tblname:"NULL", hfile? hfile:"NULL", errfile? errfile:"NULL", direction);
 	CHECK_DBPROC();
@@ -148,7 +184,7 @@ bcp_init(DBPROCESS * dbproc, const char *tblname, const char *hfile, const char 
 	/* 
 	 * Validate other parameters 
 	 */
-	if (dbproc->tds_socket->major_version < 5) {
+	if (dbproc->tds_socket->tds_version < 0x500) {
 		dbperror(dbproc, SYBETDSVER, 0);
 		return (FAIL);
 	}
@@ -168,25 +204,9 @@ bcp_init(DBPROCESS * dbproc, const char *tblname, const char *hfile, const char 
 		return (FAIL);
 	}
 
-	if (hfile != NULL) {
-
-		dbproc->hostfileinfo = calloc(1, sizeof(BCP_HOSTFILEINFO));
-
-		if (dbproc->hostfileinfo == NULL)
-			goto memory_error;
-		if ((dbproc->hostfileinfo->hostfile = strdup(hfile)) == NULL)
-			goto memory_error;
-
-		if (errfile != NULL)
-			if ((dbproc->hostfileinfo->errorfile = strdup(errfile)) == NULL)
-				goto memory_error;
-	} else {
-		dbproc->hostfileinfo = NULL;
-	}
-
 	/* Allocate storage */
 	
-	dbproc->bcpinfo = calloc(1, sizeof(DB_BCPINFO));
+	dbproc->bcpinfo = calloc(1, sizeof(TDSBCPINFO));
 	if (dbproc->bcpinfo == NULL)
 		goto memory_error;
 
@@ -199,87 +219,32 @@ bcp_init(DBPROCESS * dbproc, const char *tblname, const char *hfile, const char 
 	dbproc->bcpinfo->var_cols   = 0;
 	dbproc->bcpinfo->bind_count = 0;
 
-	if (direction == DB_IN) {
-		TDSSOCKET *tds = dbproc->tds_socket;
+	if (tds_bcp_init(dbproc->tds_socket, dbproc->bcpinfo) == TDS_FAIL) {
+		/* TODO return proper error */
+		/* Attempt to use Bulk Copy with a non-existent Server table (might be why ...) */
+		dbperror(dbproc, SYBEBCNT, 0);
+		return FAIL;
+	}
 
-		if (tds_submit_queryf(tds, "SET FMTONLY ON select * from %s SET FMTONLY OFF", 
-								dbproc->bcpinfo->tablename) == TDS_FAIL) {
-			/* Attempt to use Bulk Copy with a non-existent Server table (might be why ...) */
-			dbperror(dbproc, SYBEBCNT, 0);
-			return FAIL;
-		}
+	/* Prepare default hostfile columns */
 	
-		/* TODO check what happen if table is not present, cleanup on error */
-		while ((rc = tds_process_tokens(tds, &result_type, NULL, TDS_TOKEN_RESULTS))
-		       == TDS_SUCCEED) {
-		}
-		if (rc != TDS_NO_MORE_RESULTS) {
-			return FAIL;
-		}
-	
-		if (!tds->res_info) {
-			return FAIL;
-		}
-	
-		/* TODO check what happen if table is not present, cleanup on error */
-		resinfo = tds->res_info;
-		if ((bindinfo = tds_alloc_results(resinfo->num_cols)) == NULL)
-			goto memory_error;
-	
-		bindinfo->row_size = resinfo->row_size;
-	
-		dbproc->bcpinfo->bindinfo = bindinfo;
-		dbproc->bcpinfo->bind_count = 0;
-	
-		/* Copy the column metadata */
-		for (i = 0; i < bindinfo->num_cols; i++) {
-	
-			curcol = bindinfo->columns[i];
-			
-			/*
-			 * TODO use memcpy ??
-			 * curcol and resinfo->columns[i] are both TDSCOLUMN.  
-			 * Why not "curcol = resinfo->columns[i];"?  Because the rest of TDSCOLUMN (below column_timestamp)
-			 * isn't being used.  Perhaps this "upper" part of TDSCOLUMN should be a substructure.
-			 * Or, see if the "lower" part is unused (and zeroed out) at this point, and just do one assignment.
-			 */
-			curcol->column_type = resinfo->columns[i]->column_type;
-			curcol->column_usertype = resinfo->columns[i]->column_usertype;
-			curcol->column_flags = resinfo->columns[i]->column_flags;
-			curcol->column_size = resinfo->columns[i]->column_size;
-			curcol->column_varint_size = resinfo->columns[i]->column_varint_size;
-			curcol->column_prec = resinfo->columns[i]->column_prec;
-			curcol->column_scale = resinfo->columns[i]->column_scale;
-			curcol->column_namelen = resinfo->columns[i]->column_namelen;
-			curcol->on_server.column_type = resinfo->columns[i]->on_server.column_type;
-			curcol->on_server.column_size = resinfo->columns[i]->on_server.column_size;
-			curcol->char_conv = resinfo->columns[i]->char_conv;
-			memcpy(curcol->column_name, resinfo->columns[i]->column_name, resinfo->columns[i]->column_namelen);
-			TDS_ZERO_FREE(curcol->table_column_name);
-			if (resinfo->columns[i]->table_column_name)
-				curcol->table_column_name = strdup(resinfo->columns[i]->table_column_name);
-			curcol->column_nullable = resinfo->columns[i]->column_nullable;
-			curcol->column_identity = resinfo->columns[i]->column_identity;
-			curcol->column_timestamp = resinfo->columns[i]->column_timestamp;
-			
-			memcpy(curcol->column_collation, resinfo->columns[i]->column_collation, 5);
-			
-			if (is_numeric_type(curcol->column_type)) {
-				curcol->bcp_column_data = tds_alloc_bcp_column_data(sizeof(TDS_NUMERIC));
-				((TDS_NUMERIC *) curcol->bcp_column_data->data)->precision = curcol->column_prec;
-				((TDS_NUMERIC *) curcol->bcp_column_data->data)->scale = curcol->column_scale;
-			} else {
-				curcol->bcp_column_data = 
-					tds_alloc_bcp_column_data(MAX(curcol->column_size,curcol->on_server.column_size));
-			}
-		}
-
-		bindinfo->current_row = malloc(bindinfo->row_size);
-		if (!bindinfo->current_row)
-			goto memory_error;
-		bindinfo->row_free = bcp_row_free;
+	if (hfile == NULL) {
+		dbproc->hostfileinfo = NULL;
 		return SUCCEED;
 	}
+
+	dbproc->hostfileinfo = calloc(1, sizeof(BCP_HOSTFILEINFO));
+
+	if (dbproc->hostfileinfo == NULL)
+		goto memory_error;
+	if ((dbproc->hostfileinfo->hostfile = strdup(hfile)) == NULL)
+		goto memory_error;
+
+	if (errfile != NULL)
+		if ((dbproc->hostfileinfo->errorfile = strdup(errfile)) == NULL)
+			goto memory_error;
+
+	init_hostfile_columns(dbproc);
 
 	return SUCCEED;
 
@@ -422,9 +387,10 @@ bcp_colfmt(DBPROCESS * dbproc, int host_colnum, int host_type, int host_prefixle
 	   int host_termlen, int table_colnum)
 {
 	BCP_HOSTCOLINFO *hostcol;
+	BYTE *terminator = NULL;
 
-	tdsdump_log(TDS_DBG_FUNC, "bcp_colfmt(%p, %d, %d, %d, %d, %p)\n", 
-		    dbproc, host_colnum, host_type, host_prefixlen, (int) host_collen, host_term);
+	tdsdump_log(TDS_DBG_FUNC, "bcp_colfmt(%p, %d, %d, %d, %d, %p, %d, %d)\n", 
+		    dbproc, host_colnum, host_type, host_prefixlen, (int) host_collen, host_term, host_termlen, table_colnum);
 	CHECK_DBPROC();
 	DBPERROR_RETURN(IS_TDSDEAD(dbproc->tds_socket), SYBEDDNE);
 	CHECK_PARAMETER(dbproc->bcpinfo, SYBEBCPI, FAIL);
@@ -434,6 +400,9 @@ bcp_colfmt(DBPROCESS * dbproc, int host_colnum, int host_type, int host_prefixle
 	if (dbproc->msdblib && host_termlen == 0)
 		host_termlen = -1;
 
+	if (host_termlen < 0)
+		host_termlen = -1;
+
 	if (dbproc->hostfileinfo->host_colcount == 0) {
 		dbperror(dbproc, SYBEBCBC, 0);
 		return FAIL;
@@ -441,6 +410,11 @@ bcp_colfmt(DBPROCESS * dbproc, int host_colnum, int host_type, int host_prefixle
 
 	if (host_colnum < 1) {
 		dbperror(dbproc, SYBEBCFO, 0);
+		return FAIL;
+	}
+
+	if (host_colnum > dbproc->hostfileinfo->host_colcount) {
+		dbperror(dbproc, SYBECNOR, 0);
 		return FAIL;
 	}
 
@@ -476,7 +450,7 @@ bcp_colfmt(DBPROCESS * dbproc, int host_colnum, int host_type, int host_prefixle
 	 * If there's a positive terminator length, we need a valid terminator pointer.
 	 * If the terminator length is 0 or -1, then there's no terminator.
 	 */
-	if (host_term == NULL && host_termlen > 0 || host_term != NULL && host_termlen == 0) {
+	if (host_term == NULL && host_termlen > 0) {
 		dbperror(dbproc, SYBEVDPT, 0);	/* "all variable-length data must have either a length-prefix ..." */
 		return FAIL;
 	}
@@ -484,18 +458,19 @@ bcp_colfmt(DBPROCESS * dbproc, int host_colnum, int host_type, int host_prefixle
 	hostcol = dbproc->hostfileinfo->host_columns[host_colnum - 1];
 
 	/* TODO add precision scale and join with bcp_colfmt_ps */
+	if (host_term && host_termlen > 0) {
+		if ((terminator = malloc(host_termlen)) == NULL) {
+			dbperror(dbproc, SYBEMEM, errno);
+			return FAIL;
+		}
+		memcpy(terminator, host_term, host_termlen);
+	}
 	hostcol->host_column = host_colnum;
 	hostcol->datatype = host_type;
 	hostcol->prefix_len = host_prefixlen;
 	hostcol->column_len = host_collen;
-	if (host_term && host_termlen >= 0) {
-		free(hostcol->terminator);
-		if ((hostcol->terminator = malloc(host_termlen)) == NULL) {
-			dbperror(dbproc, SYBEMEM, errno);
-			return FAIL;
-		}
-		memcpy(hostcol->terminator, host_term, host_termlen);
-	}
+	free(hostcol->terminator);
+	hostcol->terminator = terminator;
 	hostcol->term_len = host_termlen;
 	hostcol->tab_colnum = table_colnum;
 
@@ -788,11 +763,6 @@ _bcp_exec_out(DBPROCESS * dbproc, DBINT * rows_copied)
 	tds = dbproc->tds_socket;
 	assert(tds);
 
-	if (!(hostfile = fopen(dbproc->hostfileinfo->hostfile, "w"))) {
-		dbperror(dbproc, SYBEBCUO, errno);
-		return FAIL;
-	}
-
 	bcpdatefmt = getenv("FREEBCP_DATEFMT");
 	if (!bcpdatefmt)
 		bcpdatefmt = "%Y-%m-%d %H:%M:%S.%z";
@@ -810,12 +780,10 @@ _bcp_exec_out(DBPROCESS * dbproc, DBINT * rows_copied)
 
 	tdsret = tds_process_tokens(tds, &result_type, NULL, TDS_TOKEN_RESULTS);
 	if (tdsret == TDS_FAIL || tdsret == TDS_CANCELLED) {
-		fclose(hostfile);
 		return FAIL;
 	}
 	if (!tds->res_info) {
 		/* TODO flush/cancel to keep consistent state */
-		fclose(hostfile);
 		return FAIL;
 	}
 
@@ -891,12 +859,6 @@ _bcp_exec_out(DBPROCESS * dbproc, DBINT * rows_copied)
 				destlen = -1;
 				break;
 			case SYBCHAR:
-				buflen = curcol->column_size + 1;
-				if (curcol->column_nullable)
-					destlen = -1;
-				else
-					destlen = -2;
-				break;
 			case SYBTEXT:
 				/* FIXME column_size ?? if 2gb ?? */
 				buflen = curcol->column_size + 1;
@@ -946,21 +908,27 @@ _bcp_exec_out(DBPROCESS * dbproc, DBINT * rows_copied)
 		hostcol->bcp_column_data->datalen = destlen;
 	}
 
-	/* fetch a row of data from the server */
-
 	/*
 	 * TODO above we allocate many buffer just to convert and store 
 	 * to file.. avoid all that passages...
 	 */
 
-	while (tds_process_tokens(tds, &result_type, NULL, TDS_STOPAT_ROWFMT|TDS_RETURN_DONE|TDS_RETURN_ROW|TDS_RETURN_COMPUTE) == TDS_SUCCEED) {
+	if (!(hostfile = fopen(dbproc->hostfileinfo->hostfile, "w"))) {
+		dbperror(dbproc, SYBEBCUO, errno);
+		return FAIL;
+	}
+
+	/* fetch a row of data from the server */
+
+	while (tds_process_tokens(tds, &result_type, NULL, TDS_STOPAT_ROWFMT|TDS_RETURN_DONE|TDS_RETURN_ROW|TDS_RETURN_COMPUTE) 
+		== TDS_SUCCEED) {
 
 		if (result_type != TDS_ROW_RESULT && result_type != TDS_COMPUTE_RESULT)
 			break;
 
 		row_of_query++;
 
-		/* skip rows outside of the firstrow/lastrow range , if specified */
+		/* skip rows outside of the firstrow/lastrow range, if specified */
 		if (dbproc->hostfileinfo->firstrow <= row_of_query && 
 						      row_of_query <= MAX(dbproc->hostfileinfo->lastrow, 0x7FFFFFFF)) {
 
@@ -976,7 +944,7 @@ _bcp_exec_out(DBPROCESS * dbproc, DBINT * rows_copied)
 
 				src = curcol->column_data;
 
-				if (is_blob_type(curcol->column_type)) {
+				if (is_blob_col(curcol)) {
 					src = (BYTE *) ((TDSBLOB *) src)->textvalue;
 				}
 
@@ -1004,7 +972,7 @@ _bcp_exec_out(DBPROCESS * dbproc, DBINT * rows_copied)
 					if ((srctype == SYBDATETIME || srctype == SYBDATETIME4)
 					    && (hostcol->datatype == SYBCHAR || hostcol->datatype == SYBVARCHAR)) {
 						tds_datecrack(srctype, src, &when);
-						buflen = tds_strftime((TDS_CHAR *)hostcol->bcp_column_data->data, 256,
+						buflen = (int)tds_strftime((TDS_CHAR *)hostcol->bcp_column_data->data, 256,
 									 bcpdatefmt, &when);
 					} else {
 						/* 
@@ -1061,6 +1029,7 @@ _bcp_exec_out(DBPROCESS * dbproc, DBINT * rows_copied)
 					break;
 				}
 				if( plen != 0 && written != 1 ) {
+					fclose(hostfile);
 					dbperror(dbproc, SYBEBCWE, errno);
 					return FAIL;
 				}
@@ -1073,6 +1042,7 @@ _bcp_exec_out(DBPROCESS * dbproc, DBINT * rows_copied)
 				if (buflen > 0) {
 					written = fwrite(hostcol->bcp_column_data->data, buflen, 1, hostfile);
 					if (written < 1) {
+						fclose(hostfile);
 						dbperror(dbproc, SYBEBCWE, errno);
 						return FAIL;
 					}
@@ -1082,6 +1052,7 @@ _bcp_exec_out(DBPROCESS * dbproc, DBINT * rows_copied)
 				if (hostcol->terminator && hostcol->term_len > 0) {
 					written = fwrite(hostcol->terminator, hostcol->term_len, 1, hostfile);
 					if (written < 1) {
+						fclose(hostfile);
 						dbperror(dbproc, SYBEBCWE, errno);
 						return FAIL;
 					}
@@ -1094,6 +1065,7 @@ _bcp_exec_out(DBPROCESS * dbproc, DBINT * rows_copied)
 		dbperror(dbproc, SYBEBCUC, errno);
 		return (FAIL);
 	}
+	hostfile = NULL;
 
 	if (dbproc->hostfileinfo->firstrow > 0 && row_of_query < dbproc->hostfileinfo->firstrow) {
 		/* 
@@ -1177,13 +1149,22 @@ _bcp_read_hostfile(DBPROCESS * dbproc, FILE * hostfile, int *row_error)
 		 * FIXME I think tab_colnum can be out of range - freddy77
 		 */
 		if (hostcol->tab_colnum) {
+			if (hostcol->tab_colnum > dbproc->bcpinfo->bindinfo->num_cols) {
+				tdsdump_log(TDS_DBG_FUNC, "error: file wider than table: %d/%d\n", 
+							  i+1, dbproc->bcpinfo->bindinfo->num_cols);
+				dbperror(dbproc, SYBEBEOF, 0);
+				return FAIL;
+			}
+			tdsdump_log(TDS_DBG_FUNC, "host column %d uses bcpcol %d (%p)\n", 
+				                  i+1, hostcol->tab_colnum, bcpcol);
 			bcpcol = dbproc->bcpinfo->bindinfo->columns[hostcol->tab_colnum - 1];
+			assert(bcpcol != NULL);
 		}
 
 		/* detect prefix len */
 		if (bcpcol && hostcol->prefix_len == -1) {
-			int plen = bcpcol->column_varint_size;
-			hostcol->prefix_len = plen == 5 ? 4 : plen;
+			int len = bcpcol->column_varint_size;
+			hostcol->prefix_len = len == 5 ? 4 : len;
 		}
 
 		/* a prefix length, if extant, specifies how many bytes to read */
@@ -1246,9 +1227,9 @@ _bcp_read_hostfile(DBPROCESS * dbproc, FILE * hostfile, int *row_error)
 		 * and set collen to the field's post-iconv size.  
 		 */
 		if (hostcol->term_len > 0) { /* delimited data file */
-			int file_bytes_left, file_len;
+			int file_len;
 			size_t col_bytes_left;
-			offset_type len;
+			offset_type file_bytes_left, len;
 			iconv_t cd;
 
 			len = _bcp_measure_terminated_field(hostfile, hostcol->terminator, hostcol->term_len);
@@ -1258,7 +1239,7 @@ _bcp_read_hostfile(DBPROCESS * dbproc, FILE * hostfile, int *row_error)
 				dbperror(dbproc, SYBEBCOR, 0);
 				return (FAIL);
 			}
-			collen = len;
+			collen = (int)len;
 			if (collen == 0)
 				data_is_null = 1;
 
@@ -1269,11 +1250,12 @@ _bcp_read_hostfile(DBPROCESS * dbproc, FILE * hostfile, int *row_error)
 			 */
 			file_len = collen;
 			if (bcpcol->char_conv) {
-				if (bcpcol->on_server.column_size > bcpcol->column_size)
-					collen = (collen * bcpcol->on_server.column_size) / bcpcol->column_size;
-				cd = bcpcol->char_conv->to_wire;
+				TDSICONV *char_conv = bcpcol->char_conv;
+				collen *= char_conv->server_charset.max_bytes_per_char;
+				collen += char_conv->client_charset.min_bytes_per_char - 1;
+				collen /= char_conv->client_charset.min_bytes_per_char;
+				cd = char_conv->to_wire;
 				tdsdump_log(TDS_DBG_FUNC, "Adjusted collen is %d.\n", collen);
-
 			} else {
 				cd = (iconv_t) - 1;
 			}
@@ -1292,13 +1274,13 @@ _bcp_read_hostfile(DBPROCESS * dbproc, FILE * hostfile, int *row_error)
 			col_bytes_left = collen;
 			/* TODO make tds_iconv_fread handle terminator directly to avoid fseek in _bcp_measure_terminated_field */
 			file_bytes_left = tds_iconv_fread(cd, hostfile, file_len, hostcol->term_len, coldata, &col_bytes_left);
-			collen -= col_bytes_left;
+			collen -= (int)col_bytes_left;
 
 			/* tdsdump_log(TDS_DBG_FUNC, "collen is %d after tds_iconv_fread()\n", collen); */
 
 			if (file_bytes_left != 0) {
-				tdsdump_log(TDS_DBG_FUNC, "col %d: %d of %d bytes unread\nfile_bytes_left != 0!\n", 
-							(i+1), file_bytes_left, collen);
+				tdsdump_log(TDS_DBG_FUNC, "col %d: %ld of %d bytes unread\nfile_bytes_left != 0!\n", 
+							(i+1), (long)file_bytes_left, collen);
 				*row_error = TRUE;
 				free(coldata);
 				dbperror(dbproc, SYBEBCOR, 0);
@@ -1394,6 +1376,12 @@ _bcp_read_hostfile(DBPROCESS * dbproc, FILE * hostfile, int *row_error)
 		 * At this point, however the field was read, however big it was, its address is coldata and its size is collen.
 		 */
 		tdsdump_log(TDS_DBG_FUNC, "Data read from hostfile: collen is now %d, data_is_null is %d\n", collen, data_is_null);
+		if (i == 370 - 1) {
+			char buf[32];
+			memset(buf, '\0', sizeof(buf));
+			memcpy(buf, coldata, collen);
+			tdsdump_log(TDS_DBG_FUNC, "column 370 is '%s', converts to %f\n", buf, atof(buf));
+		}
 		if (hostcol->tab_colnum) {
 			if (data_is_null) {
 				bcpcol->bcp_column_data->is_null = 1;
@@ -1503,7 +1491,7 @@ _bcp_measure_terminated_field(FILE * hostfile, BYTE * terminator, int term_len)
 		return -1;
 	}
 
-	for (sample_size = 1; (bytes_read = fread(sample, sample_size, 1, hostfile)) != 0;) {
+	for (sample_size = 1; (bytes_read = (int)fread(sample, sample_size, 1, hostfile)) != 0;) {
 
 		bytes_read *= sample_size;
 
@@ -1578,226 +1566,6 @@ _bcp_measure_terminated_field(FILE * hostfile, BYTE * terminator, int term_len)
 	return -1;
 }
 
-/**
- * Add fixed size columns to the row
- */
-/** 
- * \ingroup dblib_bcp_internal
- * \brief 
- *
- * \param dbproc contains all information needed by db-lib to manage communications with the server.
- * \param behaviour 
- * \param rowbuffer 
- * \param start 
- * 
- * \return SUCCEED or FAIL.
- * \sa 	BCP_SETL(), bcp_batch(), bcp_bind(), bcp_colfmt(), bcp_colfmt_ps(), bcp_collen(), bcp_colptr(), bcp_columns(), bcp_control(), bcp_done(), bcp_exec(), bcp_getl(), bcp_init(), bcp_moretext(), bcp_options(), bcp_readfmt(), bcp_sendrow()
- */
-static int
-_bcp_add_fixed_columns(DBPROCESS * dbproc, BEHAVIOUR behaviour, BYTE * rowbuffer, int start)
-{
-	TDS_NUMERIC *num;
-	int row_pos = start;
-	TDSCOLUMN *bcpcol;
-	int cpbytes;
-	int i, j;
-
-	assert(dbproc);
-	assert(rowbuffer);
-
-	tdsdump_log(TDS_DBG_FUNC, "_bcp_add_fixed_columns(%p, %d, %p, %d)\n", dbproc, behaviour, rowbuffer, start);
-
-	for (i = 0; i < dbproc->bcpinfo->bindinfo->num_cols; i++) {
-
-		bcpcol = dbproc->bcpinfo->bindinfo->columns[i];
-
-		if (!is_nullable_type(bcpcol->column_type) && !(bcpcol->column_nullable)) {
-
-			tdsdump_log(TDS_DBG_FUNC, "_bcp_add_fixed_columns column %d is a fixed column\n", i + 1);
-
-			if (behaviour == BCP_REC_FETCH_DATA) { 
-				if ((_bcp_get_col_data(dbproc, bcpcol)) != SUCCEED) {
-					tdsdump_log(TDS_DBG_INFO1, "bcp_get_colData (column %d) failed\n", i + 1);
-		 			return FAIL;
-				}
-			}
-
-			if (bcpcol->bcp_column_data->is_null) {
-				dbperror(dbproc, SYBEBCNN, 0);
-				return FAIL;
-			}
-
-			if (is_numeric_type(bcpcol->column_type)) {
-				num = (TDS_NUMERIC *) bcpcol->bcp_column_data->data;
-				cpbytes = tds_numeric_bytes_per_prec[num->precision];
-				memcpy(&rowbuffer[row_pos], num->array, cpbytes);
-			} else {
-				cpbytes = bcpcol->bcp_column_data->datalen > bcpcol->column_size ? 
-					  bcpcol->column_size : bcpcol->bcp_column_data->datalen;
-				memcpy(&rowbuffer[row_pos], bcpcol->bcp_column_data->data, cpbytes);
-
-				/* CHAR data may need padding out to the database length with blanks */
-
-				if (bcpcol->column_type == SYBCHAR && cpbytes < bcpcol->column_size) {
-					for (j = cpbytes; j <  bcpcol->column_size; j++)
-						rowbuffer[row_pos + j] = ' ';
-
-				}
-			}
-
-			row_pos += bcpcol->column_size;
-		}
-	}
-	return row_pos;
-}
-
-/*
- * Add variable size columns to the row
- */
-/** 
- * \ingroup dblib_bcp_internal
- * \brief 
- *
- * \param dbproc contains all information needed by db-lib to manage communications with the server.
- * \param behaviour Whether the data are already in the TDSCOLUMN or should by copied from the buffer bound by bcp_bind().
- * \param rowbuffer The row image that will be sent to the server. 
- * \param start Where to begin copying data into the rowbuffer. 
- * \param pncols Address of output variable holding the count of columns added to the rowbuffer.  
- * 
- * \return length of (potentially modified) rowbuffer, or FAIL.
- * \sa 	_bcp_send_bcp_record(), _bcp_get_col_data
- */
-static int
-_bcp_add_variable_columns(DBPROCESS * dbproc, BEHAVIOUR behaviour, BYTE * rowbuffer, int start, int *pncols)
-{
-	TDS_SMALLINT offsets[256];
-	int i, row_pos;
-	int ncols = 0;
-
-	assert(dbproc);
-	assert(rowbuffer);
-	assert(pncols);
-
-	tdsdump_log(TDS_DBG_FUNC, "_bcp_add_variable_columns(%p, %s, %p, start=%d, %p)\n", 
-				dbproc, 
-				(behaviour == BCP_REC_NOFETCH_DATA)? "BCP_REC_NOFETCH_DATA" : "BCP_REC_FETCH_DATA", 
-				rowbuffer, start, pncols);
-
-	tdsdump_log(TDS_DBG_FUNC, "%4s %8s %18s %18s %8s\n", 	"col", 
-								"type", 
-								"is_nullable_type", 
-								"column_nullable", 
-								"is null" );
-	for (i = 0; i < dbproc->bcpinfo->bindinfo->num_cols; i++) {
-		TDSCOLUMN *bcpcol = dbproc->bcpinfo->bindinfo->columns[i];
-		tdsdump_log(TDS_DBG_FUNC, "%4d %8d %18s %18s %8s\n", 	i, 
-									bcpcol->column_type,  
-									is_nullable_type(bcpcol->column_type)? "yes" : "no", 
-									bcpcol->column_nullable? "yes" : "no", 
-									bcpcol->bcp_column_data->is_null? "yes" : "no" );
-	}
-
-	/* the first two bytes of the rowbuffer are reserved to hold the entire record length */
-	row_pos = start + 2;
-	offsets[0] = row_pos;
-
-	tdsdump_log(TDS_DBG_FUNC, "%4s %8s %8s %8s\n", "col", "ncols", "row_pos", "cpbytes");
-
-	for (i = 0; i < dbproc->bcpinfo->bindinfo->num_cols; i++) {
-		int cpbytes = 0;
-		TDSCOLUMN *bcpcol = dbproc->bcpinfo->bindinfo->columns[i];
-
-		/* 
-		 * Is this column of "variable" type, i.e. NULLable 
-		 * or naturally variable length e.g. VARCHAR
-		 */
-		if (is_nullable_type(bcpcol->column_type) || bcpcol->column_nullable) {
-
-			tdsdump_log(TDS_DBG_FUNC, "%4d %8d %8d %8d\n", i, ncols, row_pos, cpbytes);
-
-			if (behaviour == BCP_REC_FETCH_DATA) { 
-				if ((_bcp_get_col_data(dbproc, bcpcol)) != SUCCEED) {
-		 			return FAIL;
-				}
-				tdsdump_log(TDS_DBG_FUNC, "column %d is %d bytes and is %sNULL\n", 
-						i+1, 
-						bcpcol->bcp_column_data->datalen, 
-						bcpcol->bcp_column_data->is_null? "":"not ");
-			}
-
-			/* If it's a NOT NULL column, and we have no data, throw an error. */
-			if (!(bcpcol->column_nullable) && bcpcol->bcp_column_data->is_null) {
-				dbperror(dbproc, SYBEBCNN, 0);
-				return FAIL;
-			}
-
-			/* move the column buffer into the rowbuffer */
-			if (!bcpcol->bcp_column_data->is_null) {
-				if (is_blob_type(bcpcol->column_type)) {
-					cpbytes = 16;
-					bcpcol->column_textpos = row_pos;               /* save for data write */
-				} else if (is_numeric_type(bcpcol->column_type)) {
-					TDS_NUMERIC *num = (TDS_NUMERIC *) bcpcol->bcp_column_data->data;
-					cpbytes = tds_numeric_bytes_per_prec[num->precision];
-					memcpy(&rowbuffer[row_pos], num->array, cpbytes);
-				} else {
-					cpbytes = bcpcol->bcp_column_data->datalen > bcpcol->column_size ? 
-						  bcpcol->column_size : bcpcol->bcp_column_data->datalen;
-					memcpy(&rowbuffer[row_pos], bcpcol->bcp_column_data->data, cpbytes);
-				}
-			}
-
-			row_pos += cpbytes;
-			offsets[++ncols] = row_pos;
-			tdsdump_dump_buf(TDS_DBG_NETWORK, "BCP row buffer so far", rowbuffer,  row_pos);
-		}
-	}
-
-	tdsdump_log(TDS_DBG_FUNC, "%4d %8d %8d\n", i, ncols, row_pos);
-
-	/*
-	 * The rowbuffer ends with an offset table and, optionally, an adjustment table.  
-	 * The offset table has 1-byte elements that describe the locations of the start of each column in
-	 * the rowbuffer.  If the largest offset is greater than 255, another table -- the adjustment table --
-	 * is inserted just before the offset table.  It holds the high bytes. 
-	 * 
-	 * Both tables are laid out in reverse:
-	 * 	#elements, offset N+1, offset N, offset N-1, ... offset 0
-	 * E.g. for 2 columns you have 4 data points:
-	 *	1.  How many elements (4)
-	 *	2.  Start of column 3 (non-existent, "one off the end")
-	 *	3.  Start of column 2
-	 *	4.  Start of column 1
-	 *  The length of each column is computed by subtracting its start from the its successor's start. 
-	 *
-	 * The algorithm below computes both tables. If the adjustment table isn't needed, the 
-	 * effect is to overwrite it with the offset table.  
-	 */
-	while (ncols && offsets[ncols] == offsets[ncols-1])
-		ncols--;	/* trailing NULL columns are not sent and are not included in the offset table */
-		
-	if (ncols) {
-		BYTE *padj = rowbuffer + row_pos;
-		BYTE *poff = offsets[ncols] > 0xFF? padj + ncols + 1 : padj;
-
-		*padj++ = 1 + ncols;
-		*poff++ = 1 + ncols;
-		
-		for (i=0; i <= ncols; i++) {
-			padj[i] = offsets[ncols-i] >> 8;
-			poff[i] = offsets[ncols-i] & 0xFF;
-		}
-		row_pos = poff + ncols + 1 - rowbuffer;
-	}
-
-	tdsdump_log(TDS_DBG_FUNC, "%4d %8d %8d\n", i, ncols, row_pos);
-	tdsdump_dump_buf(TDS_DBG_NETWORK, "BCP row buffer", rowbuffer,  row_pos);
-	
-	*pncols = ncols;
-
-	return ncols == 0? start : row_pos;
-}
-
 /** 
  * \ingroup dblib_bcp
  * \brief Write data in host variables to the table.  
@@ -1840,24 +1608,17 @@ bcp_sendrow(DBPROCESS * dbproc)
 	if (dbproc->bcpinfo->xfer_init == 0) {
 
 		/* The start_copy function retrieves details of the table's columns */
-		if (_bcp_start_copy_in(dbproc) == FAIL) {
+		if (tds_bcp_start_copy_in(tds, dbproc->bcpinfo) == TDS_FAIL) {
 			dbperror(dbproc, SYBEBULKINSERT, 0);
-			return (FAIL);
-		}
-
-		/* set packet type to send bulk data */
-		tds->out_flag = TDS_BULK;
-		tds_set_state(tds, TDS_QUERYING);
-
-		if (IS_TDS7_PLUS(tds)) {
-			_bcp_send_colmetadata(dbproc);
+			return FAIL;
 		}
 
 		dbproc->bcpinfo->xfer_init = 1;
 
 	}
 
-	return _bcp_send_bcp_record(dbproc, BCP_REC_FETCH_DATA);
+	dbproc->bcpinfo->parent = dbproc;
+	return tds_bcp_send_record(dbproc->tds_socket, dbproc->bcpinfo, _bcp_get_col_data, _bcp_null_error, 0);
 }
 
 
@@ -1896,14 +1657,9 @@ _bcp_exec_in(DBPROCESS * dbproc, DBINT * rows_copied)
 		return FAIL;
 	}
 
-	if (_bcp_start_copy_in(dbproc) == FAIL)
+	if (tds_bcp_start_copy_in(tds, dbproc->bcpinfo) == TDS_FAIL) {
+		fclose(hostfile);
 		return FAIL;
-
-	tds->out_flag = TDS_BULK;
-	tds_set_state(tds, TDS_QUERYING);
-
-	if (IS_TDS7_PLUS(tds)) {
-		_bcp_send_colmetadata(dbproc);
 	}
 
 	row_of_hostfile = 0;
@@ -1912,6 +1668,7 @@ _bcp_exec_in(DBPROCESS * dbproc, DBINT * rows_copied)
 	row_start = ftello(hostfile);
 	row_error_count = 0;
 	row_error = 0;
+	dbproc->bcpinfo->parent = dbproc;
 
 	while ((ret=_bcp_read_hostfile(dbproc, hostfile, &row_error)) == MORE_ROWS) {
 
@@ -1922,6 +1679,7 @@ _bcp_exec_in(DBPROCESS * dbproc, DBINT * rows_copied)
 
 			if (errfile == NULL && dbproc->hostfileinfo->errorfile) {
 				if (!(errfile = fopen(dbproc->hostfileinfo->errorfile, "w"))) {
+					fclose(hostfile);
 					dbperror(dbproc, SYBEBUOE, 0);
 					return FAIL;
 				}
@@ -1957,7 +1715,7 @@ _bcp_exec_in(DBPROCESS * dbproc, DBINT * rows_copied)
 				fseeko(hostfile, row_start, SEEK_SET);
 
 				while (error_row_size > 0) {
-					size_t chunk = error_row_size > chunk_size ? chunk_size : error_row_size;
+					size_t chunk = error_row_size > chunk_size ? chunk_size : (size_t) error_row_size;
 
 					if (!row_in_error) {
 						if ((row_in_error = malloc(chunk)) == NULL) {
@@ -1968,8 +1726,8 @@ _bcp_exec_in(DBPROCESS * dbproc, DBINT * rows_copied)
 					if (fread(row_in_error, chunk, 1, hostfile) != 1) {
 						printf("BILL fread failed after fseek\n");
 					}
-					count = fwrite(row_in_error, chunk, 1, errfile);
-					if( count < chunk ) {
+					count = (int)fwrite(row_in_error, chunk, 1, errfile);
+					if( (size_t)count < chunk ) {
 						dbperror(dbproc, SYBEBWEF, errno);
 					}
 					error_row_size -= chunk;
@@ -1989,32 +1747,27 @@ _bcp_exec_in(DBPROCESS * dbproc, DBINT * rows_copied)
 			if (dbproc->hostfileinfo->firstrow <= row_of_hostfile && 
 							      row_of_hostfile <= MAX(dbproc->hostfileinfo->lastrow, 0x7FFFFFFF)) {
 
-				if (_bcp_send_bcp_record(dbproc, BCP_REC_NOFETCH_DATA) == SUCCEED) {
+				if (tds_bcp_send_record(dbproc->tds_socket, dbproc->bcpinfo, _bcp_no_get_col_data, _bcp_null_error, 0) == TDS_SUCCEED) {
 			
 					rows_written_so_far++;
 	
 					if (dbproc->hostfileinfo->batch > 0 && rows_written_so_far == dbproc->hostfileinfo->batch) {
-						rows_written_so_far = 0;
-	
-						tds_flush_packet(tds);
-	
-						tds_set_state(tds, TDS_PENDING);
-	
-						if (tds_process_simple_query(tds) != TDS_SUCCEED) {
+						if (tds_bcp_done(tds, &rows_written_so_far) != TDS_SUCCEED) {
 							if (errfile)
 								fclose(errfile);
+							fclose(hostfile);
 							return FAIL;
 						}
 							
-						*rows_copied += tds->rows_affected;
+						*rows_copied += rows_written_so_far;
+						rows_written_so_far = 0;
 	
 						dbperror(dbproc, SYBEBBCI, 0); /* batch copied to server */
 	
-						_bcp_start_new_batch(dbproc);
-	
+						tds_bcp_start(tds, dbproc->bcpinfo);
 					}
 				}
-			}
+			} 
 		}
 
 		row_start = ftello(hostfile);
@@ -2035,15 +1788,8 @@ _bcp_exec_in(DBPROCESS * dbproc, DBINT * rows_copied)
 		ret = FAIL;
 	}
 
-	tds_flush_packet(tds);
-
-	tds_set_state(tds, TDS_PENDING);
-
-	if (tds_process_simple_query(tds) != TDS_SUCCEED) {
-		return FAIL;
-	}
-	
-	*rows_copied += tds->rows_affected;
+	tds_bcp_done(tds, &rows_written_so_far);
+	*rows_copied += rows_written_so_far;
 
 	return ret == NO_MORE_ROWS? SUCCEED : FAIL;	/* (ret is returned from _bcp_read_hostfile) */
 }
@@ -2065,7 +1811,7 @@ RETCODE
 bcp_exec(DBPROCESS * dbproc, DBINT *rows_copied)
 {
 	DBINT dummy_copied;
-	RETCODE ret = 0;
+	RETCODE ret = FAIL;
 
 	tdsdump_log(TDS_DBG_FUNC, "bcp_exec(%p, %p)\n", dbproc, rows_copied);
 	CHECK_DBPROC();
@@ -2086,522 +1832,6 @@ bcp_exec(DBPROCESS * dbproc, DBINT *rows_copied)
 	return ret;
 }
 
-static void 
-bcp_row_free(TDSRESULTINFO* result, unsigned char *row)
-{
-	result->row_size = 0;
-	TDS_ZERO_FREE(result->current_row);
-}
-
-/** 
- * \ingroup dblib_bcp_internal
- * \brief 
- *
- * \param dbproc contains all information needed by db-lib to manage communications with the server.
- * 
- * \return SUCCEED or FAIL.
- * \sa 	BCP_SETL(), bcp_batch(), bcp_bind(), bcp_colfmt(), bcp_colfmt_ps(), bcp_collen(), bcp_colptr(), bcp_columns(), bcp_control(), bcp_done(), bcp_exec(), bcp_getl(), bcp_init(), bcp_moretext(), bcp_options(), bcp_readfmt(), bcp_sendrow()
- */
-static RETCODE
-_bcp_start_copy_in(DBPROCESS * dbproc)
-{
-	TDSSOCKET *tds = dbproc->tds_socket;
-	TDSCOLUMN *bcpcol;
-	int i, firstcol;
-	int fixed_col_len_tot     = 0;
-	int variable_col_len_tot  = 0;
-	int column_bcp_data_size  = 0;
-	int bcp_record_size       = 0;
-	char *query;
-
-	tdsdump_log(TDS_DBG_FUNC, "_bcp_start_copy_in(%p)\n", dbproc);
-	assert(dbproc);
-
-	if (IS_TDS7_PLUS(tds)) {
-		int erc;
-		char *hint;
-		TDS_PBCB colclause;
-		char clause_buffer[4096] = { 0 };
-
-		colclause.pb = clause_buffer;
-		colclause.cb = sizeof(clause_buffer);
-		colclause.from_malloc = 0;
-
-		firstcol = 1;
-
-		for (i = 0; i < dbproc->bcpinfo->bindinfo->num_cols; i++) {
-			bcpcol = dbproc->bcpinfo->bindinfo->columns[i];
-
-			if (dbproc->bcpinfo->identity_insert_on) {
-				if (!bcpcol->column_timestamp) {
-					_bcp_build_bulk_insert_stmt(tds, &colclause, bcpcol, firstcol);
-					firstcol = 0;
-				}
-			} else {
-				if (!bcpcol->column_identity && !bcpcol->column_timestamp) {
-					_bcp_build_bulk_insert_stmt(tds, &colclause, bcpcol, firstcol);
-					firstcol = 0;
-				}
-			}
-		}
-
-		if (dbproc->bcpinfo->hint) {
-			if (asprintf(&hint, " with (%s)", dbproc->bcpinfo->hint) < 0) {
-				return FAIL;
-			}
-		} else {
-			hint = strdup("");
-		}
-		if (!hint)
-			return FAIL;
-
-		erc = asprintf(&query, "insert bulk %s (%s) %s", dbproc->bcpinfo->tablename, colclause.pb, hint);
-
-		free(hint);
-		if (colclause.from_malloc)
-			TDS_ZERO_FREE(colclause.pb);	/* just for good measure; not used beyond this point */
-
-		if (erc < 0) {
-			return FAIL;
-		}
-
-	} else {
-		if (asprintf(&query, "insert bulk %s", dbproc->bcpinfo->tablename) < 0) {
-			return FAIL;
-		}
-	}
-
-	tds_submit_query(tds, query);
-
-	/* save the statement for later... */
-
-	dbproc->bcpinfo->insert_stmt = query;
-
-	/*
-	 * In TDS 5 we get the column information as a result set from the "insert bulk" command.
-	 * We're going to ignore it.  
-	 */
-	if (tds_process_simple_query(tds) != TDS_SUCCEED)
-		return FAIL;
-
-	/* 
-	 * Work out the number of "variable" columns.  These are either nullable or of 
-	 * varying length type e.g. varchar.   
-	 */
-	dbproc->bcpinfo->var_cols = 0;
-
-	if (IS_TDS50(tds)) {
-		for (i = 0; i < dbproc->bcpinfo->bindinfo->num_cols; i++) {
-	
-			bcpcol = dbproc->bcpinfo->bindinfo->columns[i];
-
-			/* work out storage required for thsi datatype */
-			/* blobs always require 16, numerics vary, the */
-			/* rest can be taken from the server           */
-
-			if (is_blob_type(bcpcol->on_server.column_type))
-				column_bcp_data_size  = 16;
-			else if (is_numeric_type(bcpcol->on_server.column_type))
-				column_bcp_data_size  = tds_numeric_bytes_per_prec[bcpcol->column_prec];
-			else
-				column_bcp_data_size  = bcpcol->column_size;
-
-			/* now add that size into either fixed or variable */
-			/* column totals...                                */
-
-			if (is_nullable_type(bcpcol->on_server.column_type) || bcpcol->column_nullable) {
-				dbproc->bcpinfo->var_cols++;
-				variable_col_len_tot += column_bcp_data_size;
-			}
-			else {
-				fixed_col_len_tot += column_bcp_data_size;
-			}
-		}
-
-		/* this formula taken from sybase manual... */
-
-		bcp_record_size =  	4 +
-							fixed_col_len_tot +
-							variable_col_len_tot +
-							( (int)(variable_col_len_tot / 256 ) + 1 ) +
-							(dbproc->bcpinfo->var_cols + 1) +
-							2;
-
-		tdsdump_log(TDS_DBG_FUNC, "current_record_size = %d\n", dbproc->bcpinfo->bindinfo->row_size);
-		tdsdump_log(TDS_DBG_FUNC, "bcp_record_size     = %d\n", bcp_record_size);
-
-		if (bcp_record_size > dbproc->bcpinfo->bindinfo->row_size) {
-			/* FIXME remove memory leak */
-			dbproc->bcpinfo->bindinfo->current_row = realloc(dbproc->bcpinfo->bindinfo->current_row, bcp_record_size);
-			dbproc->bcpinfo->bindinfo->row_free = bcp_row_free;
-			if (dbproc->bcpinfo->bindinfo->current_row == NULL) {
-				tdsdump_log(TDS_DBG_FUNC, "could not realloc current_row\n");
-				return FAIL;
-			}
-			dbproc->bcpinfo->bindinfo->row_size = bcp_record_size;
-		}
-	}
-	if (IS_TDS7_PLUS(tds)) {
-		for (i = 0; i < dbproc->bcpinfo->bindinfo->num_cols; i++) {
-	
-			bcpcol = dbproc->bcpinfo->bindinfo->columns[i];
-
-			/*
-			 * dont send the (meta)data for timestamp columns, or
-			 * identity columns (unless indentity_insert is enabled
-			 */
-
-			if ((!dbproc->bcpinfo->identity_insert_on && bcpcol->column_identity) || 
-				bcpcol->column_timestamp) {
-				continue;
-			}
-
-			switch (bcpcol->column_varint_size) {
-				case 4:
-					if (is_blob_type(bcpcol->column_type)) {
-						bcp_record_size += 25;
-					}
-					bcp_record_size += 4;
-					break;
-				case 2:
-					bcp_record_size +=2;
-					break;
-				case 1:
-					bcp_record_size++;
-					break;
-				case 0:
-					break;
-			}
-
-			if (is_numeric_type(bcpcol->column_type)) {
-				bcp_record_size += tds_numeric_bytes_per_prec[bcpcol->column_prec];
-			} else {
-				bcp_record_size += bcpcol->column_size;
-			}
-		}
-		tdsdump_log(TDS_DBG_FUNC, "current_record_size = %d\n", dbproc->bcpinfo->bindinfo->row_size);
-		tdsdump_log(TDS_DBG_FUNC, "bcp_record_size     = %d\n", bcp_record_size);
-
-		if (bcp_record_size > dbproc->bcpinfo->bindinfo->row_size) {
-			dbproc->bcpinfo->bindinfo->current_row = realloc(dbproc->bcpinfo->bindinfo->current_row, bcp_record_size);
-			dbproc->bcpinfo->bindinfo->row_free = bcp_row_free;
-			if (dbproc->bcpinfo->bindinfo->current_row == NULL) {
-				tdsdump_log(TDS_DBG_FUNC, "could not realloc current_row\n");
-				return FAIL;
-			}
-			dbproc->bcpinfo->bindinfo->row_size = bcp_record_size;
-		}
-	}
-
-	return SUCCEED;
-}
-
-/** 
- * \ingroup dblib_bcp_internal
- * \brief 
- *
- * \param tds 
- * \param clause 
- * \param bcpcol 
- * \param first 
- * 
- * \return SUCCEED or FAIL.
- * \sa 	BCP_SETL(), bcp_batch(), bcp_bind(), bcp_colfmt(), bcp_colfmt_ps(), bcp_collen(), bcp_colptr(), bcp_columns(), bcp_control(), bcp_done(), bcp_exec(), bcp_getl(), bcp_init(), bcp_moretext(), bcp_options(), bcp_readfmt(), bcp_sendrow()
- */
-static RETCODE
-_bcp_build_bulk_insert_stmt(TDSSOCKET * tds, TDS_PBCB * clause, TDSCOLUMN * bcpcol, int first)
-{
-	char buffer[32];
-	char *column_type = buffer;
-
-	tdsdump_log(TDS_DBG_FUNC, "_bcp_build_bulk_insert_stmt(%p, %p, %p, %d)\n", tds, clause, bcpcol, first);
-
-	/* TODO reuse function in tds/query.c */
-	switch (bcpcol->on_server.column_type) {
-	case SYBINT1:
-		column_type = "tinyint";
-		break;
-	case SYBBIT:
-		column_type = "bit";
-		break;
-	case SYBINT2:
-		column_type = "smallint";
-		break;
-	case SYBINT4:
-		column_type = "int";
-		break;
-	case SYBINT8:
-		column_type = "bigint";
-		break;
-	case SYBDATETIME:
-		column_type = "datetime";
-		break;
-	case SYBDATETIME4:
-		column_type = "smalldatetime";
-		break;
-	case SYBREAL:
-		column_type = "real";
-		break;
-	case SYBMONEY:
-		column_type = "money";
-		break;
-	case SYBMONEY4:
-		column_type = "smallmoney";
-		break;
-	case SYBFLT8:
-		column_type = "float";
-		break;
-
-	case SYBINTN:
-		switch (bcpcol->column_size) {
-		case 1:
-			column_type = "tinyint";
-			break;
-		case 2:
-			column_type = "smallint";
-			break;
-		case 4:
-			column_type = "int";
-			break;
-		case 8:
-			column_type = "bigint";
-			break;
-		}
-		break;
-
-	case SYBBITN:
-		column_type = "bit";
-		break;
-	case SYBFLTN:
-		switch (bcpcol->column_size) {
-		case 4:
-			column_type = "real";
-			break;
-		case 8:
-			column_type = "float";
-			break;
-		}
-		break;
-	case SYBMONEYN:
-		switch (bcpcol->column_size) {
-		case 4:
-			column_type = "smallmoney";
-			break;
-		case 8:
-			column_type = "money";
-			break;
-		}
-		break;
-	case SYBDATETIMN:
-		switch (bcpcol->column_size) {
-		case 4:
-			column_type = "smalldatetime";
-			break;
-		case 8:
-			column_type = "datetime";
-			break;
-		}
-		break;
-	case SYBDECIMAL:
-		sprintf(column_type, "decimal(%d,%d)", bcpcol->column_prec, bcpcol->column_scale);
-		break;
-	case SYBNUMERIC:
-		sprintf(column_type, "numeric(%d,%d)", bcpcol->column_prec, bcpcol->column_scale);
-		break;
-
-	case XSYBVARBINARY:
-		sprintf(column_type, "varbinary(%d)", bcpcol->column_size);
-		break;
-	case XSYBVARCHAR:
-		sprintf(column_type, "varchar(%d)", bcpcol->column_size);
-		break;
-	case XSYBBINARY:
-		sprintf(column_type, "binary(%d)", bcpcol->column_size);
-		break;
-	case XSYBCHAR:
-		sprintf(column_type, "char(%d)", bcpcol->column_size);
-		break;
-	case SYBTEXT:
-		sprintf(column_type, "text");
-		break;
-	case SYBIMAGE:
-		sprintf(column_type, "image");
-		break;
-	case XSYBNVARCHAR:
-		sprintf(column_type, "nvarchar(%d)", bcpcol->column_size);
-		break;
-	case XSYBNCHAR:
-		sprintf(column_type, "nchar(%d)", bcpcol->column_size);
-		break;
-	case SYBNTEXT:
-		sprintf(column_type, "ntext");
-		break;
-	case SYBUNIQUE:
-		sprintf(column_type, "uniqueidentifier  ");
-		break;
-	default:
-		dbperror( NULL, SYBEBPROBADTYP, 0);
-		tdsdump_log(TDS_DBG_FUNC, "error: cannot build bulk insert statement. unrecognized server datatype %d\n",
-				bcpcol->on_server.column_type);
-		return FAIL;
-	}
-
-	if (clause->cb < strlen(clause->pb) 
-		       + tds_quote_id(tds, NULL, bcpcol->column_name, bcpcol->column_namelen) 
-		       + strlen(column_type) 
-		       + ((first) ? 2 : 4)) {
-		char *temp = malloc(2 * clause->cb);
-
-		if (!temp) {
-			dbperror(NULL, SYBEMEM, errno);
-			return FAIL;
-		}
-		strcpy(temp, clause->pb);
-		if (clause->from_malloc)
-			free(clause->pb);
-		clause->from_malloc = 1;
-		clause->pb = temp;
-		clause->cb *= 2;
-	}
-
-	if (!first)
-		strcat(clause->pb, ", ");
-
-	tds_quote_id(tds, strchr(clause->pb, 0), bcpcol->column_name, bcpcol->column_namelen);
-	strcat(clause->pb, " ");
-	strcat(clause->pb, column_type);
-
-	return SUCCEED;
-}
-
-/** 
- * \ingroup dblib_bcp_internal
- * \brief 
- *
- * \param dbproc contains all information needed by db-lib to manage communications with the server.
- * 
- * \return SUCCEED or FAIL.
- * \sa 	BCP_SETL(), bcp_batch(), bcp_bind(), bcp_colfmt(), bcp_colfmt_ps(), bcp_collen(), bcp_colptr(), bcp_columns(), bcp_control(), bcp_done(), bcp_exec(), bcp_getl(), bcp_init(), bcp_moretext(), bcp_options(), bcp_readfmt(), bcp_sendrow()
- */
-static RETCODE
-_bcp_start_new_batch(DBPROCESS * dbproc)
-{
-	TDSSOCKET *tds = dbproc->tds_socket;
-
-	tdsdump_log(TDS_DBG_FUNC, "_bcp_start_new_batch(%p)\n", dbproc);
-	assert(dbproc);
-
-	tds_submit_query(tds, dbproc->bcpinfo->insert_stmt);
-
-	if (tds_process_simple_query(tds) != TDS_SUCCEED)
-		return FAIL;
-
-	/* TODO problem with thread safety */
-	tds->out_flag = TDS_BULK;
-	tds_set_state(tds, TDS_QUERYING);
-
-	if (IS_TDS7_PLUS(tds)) {
-		_bcp_send_colmetadata(dbproc);
-	}
-	
-	return SUCCEED;
-}
-
-/** 
- * \ingroup dblib_bcp_internal
- * \brief 
- *
- * \param dbproc contains all information needed by db-lib to manage communications with the server.
- * 
- * \return SUCCEED or FAIL.
- * \sa 	BCP_SETL(), bcp_batch(), bcp_bind(), bcp_colfmt(), bcp_colfmt_ps(), bcp_collen(), bcp_colptr(), bcp_columns(), bcp_control(), bcp_done(), bcp_exec(), bcp_getl(), bcp_init(), bcp_moretext(), bcp_options(), bcp_readfmt(), bcp_sendrow()
- */
-static RETCODE
-_bcp_send_colmetadata(DBPROCESS * dbproc)
-{
-	const static unsigned char colmetadata_token = 0x81;
-	TDSSOCKET *tds = dbproc->tds_socket;
-	TDSCOLUMN *bcpcol;
-	int i, num_cols;
-
-	tdsdump_log(TDS_DBG_FUNC, "_bcp_send_colmetadata(%p)\n", dbproc);
-	assert(dbproc);
-
-	/* 
-	 * Deep joy! For TDS 8 we have to send a colmetadata message followed by row data 
-	 */
-	tds_put_byte(tds, colmetadata_token);	/* 0x81 */
-
-	num_cols = 0;
-	for (i = 0; i < dbproc->bcpinfo->bindinfo->num_cols; i++) {
-		bcpcol = dbproc->bcpinfo->bindinfo->columns[i];
-		if ((!dbproc->bcpinfo->identity_insert_on && bcpcol->column_identity) ||
-			bcpcol->column_timestamp) {
-			continue;
-		}
-		num_cols++;
-	}
-
-	tds_put_smallint(tds, num_cols);
-
-	for (i = 0; i < dbproc->bcpinfo->bindinfo->num_cols; i++) {
-		bcpcol = dbproc->bcpinfo->bindinfo->columns[i];
-
-	/*
-	 * dont send the (meta)data for timestamp columns, or
-	 * identity columns (unless indentity_insert is enabled
-	 */
-
-        if ((!dbproc->bcpinfo->identity_insert_on && bcpcol->column_identity) ||
-            bcpcol->column_timestamp) {
-            continue;
-        }
-
-		if (IS_TDS90(tds))
-			tds_put_int(tds, bcpcol->column_usertype);
-		else
-			tds_put_smallint(tds, bcpcol->column_usertype);
-		tds_put_smallint(tds, bcpcol->column_flags);
-		tds_put_byte(tds, bcpcol->on_server.column_type);
-
-		switch (bcpcol->column_varint_size) {
-		case 4:
-			tds_put_int(tds, bcpcol->column_size);
-			break;
-		case 2:
-			tds_put_smallint(tds, bcpcol->column_size);
-			break;
-		case 1:
-			tds_put_byte(tds, bcpcol->column_size);
-			break;
-		case 0:
-			break;
-		default:
-			break;
-		}
-
-		if (is_numeric_type(bcpcol->on_server.column_type)) {
-			tds_put_byte(tds, bcpcol->column_prec);
-			tds_put_byte(tds, bcpcol->column_scale);
-		}
-		if (IS_TDS8_PLUS(tds)
-		    && is_collate_type(bcpcol->on_server.column_type)) {
-			tds_put_n(tds, bcpcol->column_collation, 5);
-		}
-		if (is_blob_type(bcpcol->on_server.column_type)) {
-			/* FIXME strlen return len in bytes not in characters required here */
-			tds_put_smallint(tds, strlen(dbproc->bcpinfo->tablename));
-			tds_put_string(tds, dbproc->bcpinfo->tablename, strlen(dbproc->bcpinfo->tablename));
-		}
-		/* FIXME column_namelen contains len in bytes not in characters required here */
-		tds_put_byte(tds, bcpcol->column_namelen);
-		tds_put_string(tds, bcpcol->column_name, bcpcol->column_namelen);
-
-	}
-
-	return SUCCEED;
-}
-
 /** 
  * \ingroup dblib_bcp_internal
  * \brief 
@@ -2614,7 +1844,7 @@ _bcp_send_colmetadata(DBPROCESS * dbproc)
  * \sa 	BCP_SETL(), bcp_batch(), bcp_bind(), bcp_colfmt(), bcp_colfmt_ps(), bcp_collen(), bcp_colptr(), bcp_columns(), bcp_control(), bcp_done(), bcp_exec(), bcp_getl(), bcp_init(), bcp_moretext(), bcp_options(), bcp_readfmt(), bcp_sendrow()
  */
 static char *
-_bcp_fgets(char *buffer, size_t size, FILE *f)
+_bcp_fgets(char *buffer, int size, FILE *f)
 {
 	char *p = fgets(buffer, size, f);
 	if (p == NULL) 
@@ -2640,7 +1870,7 @@ _bcp_fgets(char *buffer, size_t size, FILE *f)
  * \sa 	bcp_colfmt(), bcp_colfmt_ps(), bcp_columns(), bcp_writefmt()
  */
 RETCODE
-bcp_readfmt(DBPROCESS * dbproc, char *filename)
+bcp_readfmt(DBPROCESS * dbproc, const char filename[])
 {
 	BCP_HOSTCOLINFO *hostcol;
 	FILE *ffile;
@@ -2669,7 +1899,7 @@ bcp_readfmt(DBPROCESS * dbproc, char *filename)
 	}
 
 	if ((_bcp_fgets(buffer, sizeof(buffer), ffile)) != NULL) {
-		lf_version = atof(buffer);
+		lf_version = (float)atof(buffer);
 	} else if (ferror(ffile)) {
 		dbperror(dbproc, SYBEBRFF, errno);
 		return FAIL;
@@ -2758,6 +1988,7 @@ _bcp_readfmt_colinfo(DBPROCESS * dbproc, char *buf, BCP_HOSTCOLINFO * ci)
 	int whichcol;
 	char term[30];
 	int i;
+	char *lasts;
 
 	enum nextcol
 	{
@@ -2775,7 +2006,7 @@ _bcp_readfmt_colinfo(DBPROCESS * dbproc, char *buf, BCP_HOSTCOLINFO * ci)
 	assert(ci);
 	tdsdump_log(TDS_DBG_FUNC, "_bcp_readfmt_colinfo(%p, %s, %p)\n", dbproc, buf, ci);
 
-	tok = strtok(buf, " \t");
+	tok = strtok_r(buf, " \t", &lasts);
 	whichcol = HOST_COLUMN;
 
 	/* TODO use a better way to get an int atoi is very error prone */
@@ -2894,7 +2125,7 @@ _bcp_readfmt_colinfo(DBPROCESS * dbproc, char *buf, BCP_HOSTCOLINFO * ci)
 			break;
 
 		}
-		tok = strtok(NULL, " \t");
+		tok = strtok_r(NULL, " \t", &lasts);
 	}
 	if (whichcol == NO_MORE_COLS)
 		return (TRUE);
@@ -2902,6 +2133,7 @@ _bcp_readfmt_colinfo(DBPROCESS * dbproc, char *buf, BCP_HOSTCOLINFO * ci)
 		return (FALSE);
 }
 
+#if defined(DBLIB_UNIMPLEMENTED)
 /** 
  * \ingroup dblib_bcp
  * \brief Write a format definition file. Not Implemented. 
@@ -2920,7 +2152,7 @@ _bcp_readfmt_colinfo(DBPROCESS * dbproc, char *buf, BCP_HOSTCOLINFO * ci)
  * \sa 	bcp_colfmt(), bcp_colfmt_ps(), bcp_columns(), bcp_readfmt()
  */
 RETCODE
-bcp_writefmt(DBPROCESS * dbproc, char *filename)
+bcp_writefmt(DBPROCESS * dbproc, const char filename[])
 {
 	tdsdump_log(TDS_DBG_FUNC, "UNIMPLEMENTED: bcp_writefmt(%p, %s)\n", dbproc, filename? filename:"NULL");
 	CHECK_DBPROC();
@@ -2968,6 +2200,7 @@ bcp_moretext(DBPROCESS * dbproc, DBINT size, BYTE * text)
 #endif
 	return FAIL;
 }
+#endif
 
 /** 
  * \ingroup dblib_bcp
@@ -2981,27 +2214,19 @@ bcp_moretext(DBPROCESS * dbproc, DBINT size, BYTE * text)
 DBINT
 bcp_batch(DBPROCESS * dbproc)
 {
-	TDSSOCKET *tds;
 	int rows_copied = 0;
 
 	tdsdump_log(TDS_DBG_FUNC, "bcp_batch(%p)\n", dbproc);
 	CHECK_DBPROC();
 	DBPERROR_RETURN(IS_TDSDEAD(dbproc->tds_socket), SYBEDDNE);
-	CHECK_PARAMETER(dbproc->bcpinfo, SYBEBCPI, FAIL);
+	CHECK_PARAMETER(dbproc->bcpinfo, SYBEBCPI, -1);
 
-	tds = dbproc->tds_socket;
-	tds_flush_packet(tds);
+	if (tds_bcp_done(dbproc->tds_socket, &rows_copied) != TDS_SUCCEED)
+		return -1;
 
-	tds_set_state(tds, TDS_PENDING);
+	tds_bcp_start(dbproc->tds_socket, dbproc->bcpinfo);
 
-	if (tds_process_simple_query(tds) != TDS_SUCCEED)
-		return FAIL;
-
-	rows_copied = tds->rows_affected;
-
-	_bcp_start_new_batch(dbproc);
-
-	return (rows_copied);
+	return rows_copied;
 }
 
 /** 
@@ -3017,29 +2242,23 @@ bcp_batch(DBPROCESS * dbproc)
 DBINT
 bcp_done(DBPROCESS * dbproc)
 {
-	TDSSOCKET *tds;
-	int rows_copied = -1;
+	int rows_copied;
 
 	tdsdump_log(TDS_DBG_FUNC, "bcp_done(%p)\n", dbproc);
 	CHECK_DBPROC();
 	DBPERROR_RETURN(IS_TDSDEAD(dbproc->tds_socket), SYBEDDNE);
+	
+	if (!(dbproc->bcpinfo))
+		return -1;
+
 	CHECK_PARAMETER(dbproc->bcpinfo, SYBEBCPI, FAIL);
 
-	/* TODO check proper tds state */
-
-	tds = dbproc->tds_socket;
-	tds_flush_packet(tds);
-
-	tds_set_state(tds, TDS_PENDING);
-
-	if (tds_process_simple_query(tds) != TDS_SUCCEED)
-		return FAIL;
-		
-	rows_copied = tds->rows_affected;
+	if (tds_bcp_done(dbproc->tds_socket, &rows_copied) != TDS_SUCCEED)
+		return -1;
 
 	_bcp_free_storage(dbproc);
 
-	return (rows_copied);
+	return rows_copied;
 }
 
 /** 
@@ -3136,6 +2355,9 @@ bcp_bind(DBPROCESS * dbproc, BYTE * varaddr, int prefixlen, DBINT varlen,
 	colinfo->column_varaddr  = (char *)varaddr;
 	colinfo->column_bindtype = vartype;
 	colinfo->column_bindlen  = varlen;
+
+	TDS_ZERO_FREE(colinfo->bcp_terminator);
+	colinfo->bcp_term_len = 0;
 	if((colinfo->bcp_terminator =  malloc(termlen)) == NULL) {
 		dbperror(dbproc, SYBEMEM, errno);
 		return FAIL;
@@ -3146,233 +2368,11 @@ bcp_bind(DBPROCESS * dbproc, BYTE * varaddr, int prefixlen, DBINT varlen,
 	return SUCCEED;
 }
 
-/** 
- * \ingroup dblib_bcp_internal
- * \brief 
- *
- * \param dbproc contains all information needed by db-lib to manage communications with the server.
- * \param behaviour 
- * 
- * \return SUCCEED or FAIL.
- * \sa 	BCP_SETL(), bcp_batch(), bcp_bind(), bcp_colfmt(), bcp_colfmt_ps(), bcp_collen(), bcp_colptr(), bcp_columns(), bcp_control(), bcp_done(), bcp_exec(), bcp_getl(), bcp_init(), bcp_moretext(), bcp_options(), bcp_readfmt(), bcp_sendrow()
- */
-static RETCODE
-_bcp_send_bcp_record(DBPROCESS * dbproc, BEHAVIOUR behaviour)
+static void
+_bcp_null_error(TDSBCPINFO *bcpinfo, int index, int offset)
 {
-	TDSSOCKET  *tds = dbproc->tds_socket;
-	TDSCOLUMN  *bindcol;
-
-	static const TDS_TINYINT textptr_size = 16;
-	static const unsigned char GEN_NULL = 0x00;
-
-	static const unsigned char CHARBIN_NULL[] =  { 0xff, 0xff };
-	static const unsigned char textptr[] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-						 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-	static const unsigned char timestamp[]={ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-
-	unsigned char *record;
-	TDS_INT	 old_record_size;
-	TDS_INT	 new_record_size;
-	TDS_INT	     varint_4;
-	TDS_SMALLINT varint_2;
-	TDS_TINYINT  varint_1;
-
-	int row_pos;
-	int row_sz_pos;
-	TDS_SMALLINT row_size;
-	int blob_cols = 0;
-	int var_cols_written = 0;
-	int i;
-
-	tdsdump_log(TDS_DBG_FUNC, "_bcp_send_bcp_record(%p, %d)\n", dbproc, behaviour);
-	CHECK_DBPROC();
-	DBPERROR_RETURN(IS_TDSDEAD(dbproc->tds_socket), SYBEDDNE);
-
-	record = dbproc->bcpinfo->bindinfo->current_row;
-	old_record_size = dbproc->bcpinfo->bindinfo->row_size;
-	new_record_size = 0;
-
-	if (IS_TDS7_PLUS(tds)) {
-
-		for (i = 0; i < dbproc->bcpinfo->bindinfo->num_cols; i++) {
-	
-			bindcol = dbproc->bcpinfo->bindinfo->columns[i];
-
-			/*
-			 * Don't send the (meta)data for timestamp columns or
-			 * identity columns unless indentity_insert is enabled.
-			 */
-
-			if ((!dbproc->bcpinfo->identity_insert_on && bindcol->column_identity) || 
-				bindcol->column_timestamp) {
-				continue;
-			}
-
-			if (behaviour == BCP_REC_FETCH_DATA) { 
-				if ((_bcp_get_col_data(dbproc, bindcol)) != SUCCEED) {
-					tdsdump_log(TDS_DBG_INFO1, "_bcp_get_col_data (column %d) failed\n", i + 1);
-		 			return FAIL;
-				}
-			}
-			tdsdump_log(TDS_DBG_INFO1, "parsed column %d, length %d (%snull)\n", i + 1, 
-				    bindcol->bcp_column_data->datalen, bindcol->bcp_column_data->is_null? "":"not ");
-	
-			if (bindcol->bcp_column_data->is_null) {
-				if (bindcol->column_nullable) {
-					switch (bindcol->on_server.column_type) {
-					case XSYBCHAR:
-					case XSYBVARCHAR:
-					case XSYBBINARY:
-					case XSYBVARBINARY:
-					case XSYBNCHAR:
-					case XSYBNVARCHAR:
-						memcpy(record, CHARBIN_NULL, 2);
-						record +=2;
-						new_record_size +=2;
-						break;
-					default:
-						*record = GEN_NULL;
-						record++;
-						new_record_size ++;
-						break;
-					}
-				} else {
-					dbperror(dbproc, SYBEBCNN, 0);
-					return FAIL;
-				}
-			} else {
-
-				switch (bindcol->column_varint_size) {
-				case 4:
-					if (is_blob_type(bindcol->column_type)) {
-						*record = textptr_size; record++;
-						memcpy(record, textptr, 16); record += 16;
-						memcpy(record, timestamp, 8); record += 8;
-						new_record_size += 25;
-					}
-					varint_4 = bindcol->bcp_column_data->datalen;
-#if WORDS_BIGENDIAN
-					tds_swap_datatype(SYBINT4, (unsigned char *)&varint_4);
-#endif
-					memcpy(record, &varint_4, 4); record += 4; new_record_size +=4;
-					break;
-				case 2:
-					varint_2 = bindcol->bcp_column_data->datalen;
-#if WORDS_BIGENDIAN
-					tds_swap_datatype(SYBINT2, (unsigned char *)&varint_2);
-#endif
-					memcpy(record, &varint_2, 2); record += 2; new_record_size +=2;
-					break;
-				case 1:
-					varint_1 = bindcol->bcp_column_data->datalen;
-					if (is_numeric_type(bindcol->column_type)) { 
-						varint_1 = tds_numeric_bytes_per_prec[bindcol->column_prec];
-						tdsdump_log(TDS_DBG_INFO1, "numeric type prec = %d varint_1 = %d\n",
-										 bindcol->column_prec, varint_1);
-					}
-					else {
-						varint_1 = bindcol->bcp_column_data->datalen;
-						tdsdump_log(TDS_DBG_INFO1, "varint_1 = %d\n", varint_1);
-					}
-					*record = varint_1; record++; new_record_size++;
-					break;
-				case 0:
-					break;
-				}
-
-				tdsdump_log(TDS_DBG_INFO1, "new_record_size = %d datalen = %d \n", 
-							new_record_size, bindcol->bcp_column_data->datalen);
-
-#if WORDS_BIGENDIAN
-				tds_swap_datatype(tds_get_conversion_type(bindcol->column_type, bindcol->bcp_column_data->datalen),
-									bindcol->bcp_column_data->data);
-#endif
-				if (is_numeric_type(bindcol->column_type)) {
-					TDS_NUMERIC *num = (TDS_NUMERIC *) bindcol->bcp_column_data->data;
-					int size;
-					tdsdump_log(TDS_DBG_INFO1, "numeric type prec = %d\n", num->precision);
-					if (IS_TDS7_PLUS(tds))
-						tds_swap_numeric(num);
-					size = tds_numeric_bytes_per_prec[num->precision];
-					memcpy(record, num->array, size);
-					record += size; 
-					new_record_size += size;
-				} else {
-					memcpy(record, bindcol->bcp_column_data->data, bindcol->bcp_column_data->datalen);
-					record += bindcol->bcp_column_data->datalen;
-					new_record_size += bindcol->bcp_column_data->datalen;
-				}
-
-			}
-			tdsdump_log(TDS_DBG_INFO1, "old_record_size = %d new size = %d \n",
-					old_record_size, new_record_size);
-		}
-
-		tds_put_byte(tds, TDS_ROW_TOKEN);   /* 0xd1 */
-		tds_put_n(tds, dbproc->bcpinfo->bindinfo->current_row, new_record_size);
-	}  /* IS_TDS7_PLUS */
-	else {
-			memset(record, '\0', old_record_size);	/* zero the rowbuffer */
-
-			/* offset 0 = number of var columns */
-			/* offset 1 = row number.  zeroed (datasever assigns) */
-			row_pos = 2;
-
-			if ((row_pos = _bcp_add_fixed_columns(dbproc, behaviour, record, row_pos)) == FAIL)
-				return FAIL;
-
-			row_sz_pos = row_pos;
-
-			/* potential variable columns to write */
-
-			if (dbproc->bcpinfo->var_cols) {
-				if ((row_pos = _bcp_add_variable_columns(dbproc, behaviour, record, row_pos, &var_cols_written)) == FAIL)
-					return FAIL;
-			}
-
-			row_size = row_pos;
-
-			if (var_cols_written) {
-				memcpy(&record[row_sz_pos], &row_size, sizeof(row_size));
-				record[0] = var_cols_written;
-			}
-
-			tdsdump_log(TDS_DBG_INFO1, "old_record_size = %d new size = %d \n", old_record_size, row_size);
-
-			tds_put_smallint(tds, row_size);
-			tds_put_n(tds, record, row_size);
-
-			/* row is done, now handle any text/image data */
-
-			blob_cols = 0;
-
-			for (i = 0; i < dbproc->bcpinfo->bindinfo->num_cols; i++) {
-				bindcol = dbproc->bcpinfo->bindinfo->columns[i];
-				if (is_blob_type(bindcol->column_type)) {
-					if (behaviour == BCP_REC_FETCH_DATA) { 
-						if ((_bcp_get_col_data(dbproc, bindcol)) != SUCCEED) {
-				 			return FAIL;
-						}
-					}
-					/* unknown but zero */
-					tds_put_smallint(tds, 0);
-					tds_put_byte(tds, bindcol->column_type);
-					tds_put_byte(tds, 0xff - blob_cols);
-					/*
-					 * offset of txptr we stashed during variable
-					 * column processing 
-					 */
-					tds_put_smallint(tds, bindcol->column_textpos);
-					tds_put_int(tds, bindcol->bcp_column_data->datalen);
-					tds_put_n(tds, bindcol->bcp_column_data->data, bindcol->bcp_column_data->datalen);
-					blob_cols++;
-
-				}
-			}
-			return SUCCEED;
-	}
-
-	return SUCCEED;
+	DBPROCESS *dbproc = (DBPROCESS *) bcpinfo->parent;
+	dbperror(dbproc, SYBEBCNN, 0);
 }
 
 /** 
@@ -3382,26 +2382,27 @@ _bcp_send_bcp_record(DBPROCESS * dbproc, BEHAVIOUR behaviour)
  * \param dbproc contains all information needed by db-lib to manage communications with the server.
  * \param bindcol 
  * 
- * \return SUCCEED or FAIL.
+ * \return TDS_SUCCEED or TDS_FAIL.
  * \sa 	_bcp_add_fixed_columns, _bcp_add_variable_columns, _bcp_send_bcp_record
  */
-static RETCODE
-_bcp_get_col_data(DBPROCESS * dbproc, TDSCOLUMN *bindcol)
+static int
+_bcp_get_col_data(TDSBCPINFO *bcpinfo, TDSCOLUMN *bindcol, int offset)
 {
 	TDS_TINYINT ti;
 	TDS_SMALLINT si;
 	TDS_INT li;
 	TDS_INT desttype;
-	int collen;
+	int collen, coltype;
 	int data_is_null;
 	int bytes_read;
 	int converted_data_size;
 	BYTE *dataptr;
+	DBPROCESS *dbproc = (DBPROCESS *) bcpinfo->parent;
 
-	tdsdump_log(TDS_DBG_FUNC, "_bcp_get_col_data(%p, %p)\n", dbproc, bindcol);
+	tdsdump_log(TDS_DBG_FUNC, "_bcp_get_col_data(%p, %p)\n", bcpinfo, bindcol);
 	CHECK_DBPROC();
 	DBPERROR_RETURN(IS_TDSDEAD(dbproc->tds_socket), SYBEDDNE);
-	CHECK_NULP(bindcol, "_bcp_get_col_data", 2, FAIL);
+	CHECK_NULP(bindcol, "_bcp_get_col_data", 2, TDS_FAIL);
 
 	dataptr = (BYTE *) bindcol->column_varaddr;
 
@@ -3441,16 +2442,18 @@ _bcp_get_col_data(DBPROCESS * dbproc, TDSCOLUMN *bindcol)
 			data_is_null = 1;
 		else {
 			if (collen)
-				collen = (bindcol->column_bindlen < collen) ? bindcol->column_bindlen : collen;
+				collen = (int) ((bindcol->column_bindlen < (TDS_UINT)collen) ? bindcol->column_bindlen : (TDS_UINT)collen);
 			else
-				collen = bindcol->column_bindlen;
+				collen = (int) bindcol->column_bindlen;
 		}
 	}
 
-	/* Fixed Length data - this overrides anything else specified */
+	desttype = tds_get_conversion_type(bindcol->column_type, bindcol->column_size);
 
-	if (is_fixed_type(bindcol->column_bindtype)) {
-		collen = tds_get_size_by_type(bindcol->column_bindtype);
+	/* Fixed Length data - this overrides anything else specified */
+	coltype = bindcol->column_bindtype == 0 ? desttype : bindcol->column_bindtype;
+	if (is_fixed_type(coltype)) {
+		collen = tds_get_size_by_type(coltype);
 	}
 
 	/* read the data, finally */
@@ -3471,13 +2474,11 @@ _bcp_get_col_data(DBPROCESS * dbproc, TDSCOLUMN *bindcol)
 		bindcol->bcp_column_data->datalen = 0;
 		bindcol->bcp_column_data->is_null = 1;
 	} else {
-		desttype = tds_get_conversion_type(bindcol->column_type, bindcol->column_size);
-
 		if ((converted_data_size =
-		     dbconvert(dbproc, bindcol->column_bindtype,
+		     dbconvert(dbproc, coltype,
 			       (BYTE *) dataptr, collen,
-			       desttype, bindcol->bcp_column_data->data, bindcol->column_size)) == FAIL) {
-			return (FAIL);
+			       desttype, bindcol->bcp_column_data->data, bindcol->column_size)) == -1) {
+			return TDS_FAIL;
 		}
 
 		bindcol->bcp_column_data->datalen = converted_data_size;
@@ -3485,7 +2486,13 @@ _bcp_get_col_data(DBPROCESS * dbproc, TDSCOLUMN *bindcol)
 		assert(converted_data_size > 0);
 	}
 
-	return SUCCEED;
+	return TDS_SUCCEED;
+}
+
+static int
+_bcp_no_get_col_data(TDSBCPINFO *bcpinfo, TDSCOLUMN *bindcol, int offset)
+{
+	return TDS_SUCCEED;
 }
 
 /**
@@ -3501,9 +2508,9 @@ _bcp_get_col_data(DBPROCESS * dbproc, TDSCOLUMN *bindcol)
  * \param term 
  * \param term_len 
  * 
- * \return SUCCEED or FAIL.
+ * \return data length.
  */
-static RETCODE
+static int
 _bcp_get_term_var(BYTE * pdata, BYTE * term, int term_len)
 {
 	int bufpos;
@@ -3515,7 +2522,7 @@ _bcp_get_term_var(BYTE * pdata, BYTE * term, int term_len)
 		bufpos++;
 	}
 	
-	assert(bufpos > 0);
+	assert(bufpos >= 0);
 	return bufpos;
 }
 
@@ -3537,7 +2544,7 @@ rtrim(char *str, int len)
 	while (p > str && *p == ' ') {
 		*p-- = '\0';
 	}
-	return 1 + p - str;
+	return (int)(1 + p - str);
 }
 
 /** 
@@ -3545,8 +2552,6 @@ rtrim(char *str, int len)
  * \brief 
  *
  * \param dbproc contains all information needed by db-lib to manage communications with the server.
- * 
- * \return SUCCEED or FAIL.
  */
 static void
 _bcp_free_columns(DBPROCESS * dbproc)
@@ -3573,7 +2578,6 @@ _bcp_free_columns(DBPROCESS * dbproc)
  *
  * \param dbproc contains all information needed by db-lib to manage communications with the server.
  * 
- * \return SUCCEED or FAIL.
  * \sa 	bcp_done(), bcp_exec(), bcp_init()
  */
 static void
@@ -3597,7 +2601,5 @@ _bcp_free_storage(DBPROCESS * dbproc)
 		dbproc->bcpinfo->bindinfo = NULL;
 		TDS_ZERO_FREE(dbproc->bcpinfo);
 	}
-
-	return;
 }
 

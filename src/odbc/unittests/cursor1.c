@@ -2,46 +2,32 @@
 
 /* Test cursors */
 
-static char software_version[] = "$Id: cursor1.c,v 1.12 2007/11/26 06:25:11 freddy77 Exp $";
+static char software_version[] = "$Id: cursor1.c,v 1.20 2010/07/05 09:20:32 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
-#define CHK(func,params) \
-	do { if (func params != SQL_SUCCESS) \
-		ODBC_REPORT_ERROR(#func); \
-	} while(0)
-
-#define CHK_INFO(func,params) \
-	do { if (!SQL_SUCCEEDED(func params)) \
-		ODBC_REPORT_ERROR(#func); \
-	} while(0)
-
-#define SWAP_STMT(a,b) do { SQLHSTMT xyz = a; a = b; b = xyz; } while(0)
+#define SWAP_STMT(b) do { SQLHSTMT xyz = odbc_stmt; odbc_stmt = b; b = xyz; } while(0)
 
 static int mssql2005 = 0;
 
 static void
 CheckNoRow(const char *query)
 {
-	SQLRETURN retcode;
+	SQLRETURN rc;
 
-	retcode = SQLExecDirect(Statement, (SQLCHAR *) query, SQL_NTS);
-	if (retcode == SQL_NO_DATA)
+	rc = CHKExecDirect((SQLCHAR *) query, SQL_NTS, "SINo");
+	if (rc == SQL_NO_DATA)
 		return;
-
-	if (!SQL_SUCCEEDED(retcode))
-		ODBC_REPORT_ERROR("SQLExecDirect");
 
 	do {
 		SQLSMALLINT cols;
 
-		retcode = SQLNumResultCols(Statement, &cols);
-		if (retcode != SQL_SUCCESS || cols != 0) {
+		CHKNumResultCols(&cols, "S");
+		if (cols != 0) {
 			fprintf(stderr, "Data not expected here, query:\n\t%s\n", query);
+			odbc_disconnect();
 			exit(1);
 		}
-	} while ((retcode = SQLMoreResults(Statement)) == SQL_SUCCESS);
-	if (retcode != SQL_NO_DATA)
-		ODBC_REPORT_ERROR("SQLMoreResults");
+	} while (CHKMoreResults("SNo") == SQL_SUCCESS);
 }
 
 static void
@@ -58,55 +44,38 @@ Test0(int use_sql, const char *create_sql, const char *insert_sql, const char *s
 	SQLUSMALLINT i;
 	SQLULEN num_row;
 	SQLHSTMT stmt2;
-	SQLRETURN retcode;
 
 	/* create test table */
-	Command(Statement, "IF OBJECT_ID('tempdb..#test') IS NOT NULL DROP TABLE #test");
-	Command(Statement, create_sql);
+	odbc_command("IF OBJECT_ID('tempdb..#test') IS NOT NULL DROP TABLE #test");
+	odbc_command(create_sql);
 	for (i = 1; i <= 6; ++i) {
 		char sql_buf[80], data[10];
 		memset(data, 'a' + (i - 1), sizeof(data));
 		data[i] = 0;
 		sprintf(sql_buf, insert_sql, data, i);
-		Command(Statement, sql_buf);
+		odbc_command(sql_buf);
 	}
 
 	/* set cursor options */
-	ResetStatement();
-	retcode = SQLSetStmtAttr(Statement, SQL_ATTR_CONCURRENCY, (SQLPOINTER) SQL_CONCUR_ROWVER, 0);
-	if (retcode != SQL_SUCCESS) {
-		char output[256];
-		unsigned char sqlstate[6];
-
-		CHK(SQLGetDiagRec, (SQL_HANDLE_STMT, Statement, 1, sqlstate, NULL, (SQLCHAR *) output, sizeof(output), NULL));
-		sqlstate[5] = 0;
-		if (strcmp((const char*) sqlstate, "01S02") == 0) {
-			printf("Your connection seems to not support cursors, probably you are using wrong protocol version or Sybase\n");
-			Disconnect();
-			exit(0);
-		}
-		ODBC_REPORT_ERROR("SQLSetStmtAttr");
-	}
-	CHK(SQLSetStmtAttr, (Statement, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER) SQL_CURSOR_DYNAMIC, 0));
-	CHK(SQLSetStmtAttr, (Statement, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER) ROWS, 0));
-	CHK(SQLSetStmtAttr, (Statement, SQL_ATTR_ROW_STATUS_PTR, (SQLPOINTER) statuses, 0));
-	CHK(SQLSetStmtAttr, (Statement, SQL_ATTR_ROWS_FETCHED_PTR, &num_row, 0));
-	CHK(SQLSetCursorName, (Statement, (SQLCHAR *) "C1", SQL_NTS));
+	odbc_reset_statement();
+	CHKSetStmtAttr(SQL_ATTR_CONCURRENCY, (SQLPOINTER) SQL_CONCUR_ROWVER, 0, "S");
+	CHKSetStmtAttr(SQL_ATTR_CURSOR_TYPE, (SQLPOINTER) SQL_CURSOR_DYNAMIC, 0, "S");
+	CHKSetStmtAttr(SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER) ROWS, 0, "S");
+	CHKSetStmtAttr(SQL_ATTR_ROW_STATUS_PTR, (SQLPOINTER) statuses, 0, "S");
+	CHKSetStmtAttr(SQL_ATTR_ROWS_FETCHED_PTR, &num_row, 0, "S");
+	CHKSetCursorName((SQLCHAR *) "C1", SQL_NTS, "S");
 
 	/* */
-	CHK(SQLExecDirect, (Statement, (SQLCHAR *) select_sql, SQL_NTS));
+	CHKExecDirect((SQLCHAR *) select_sql, SQL_NTS, "S");
 
 	/* bind some rows at a time */
-	CHK(SQLBindCol, (Statement, 1, SQL_C_ULONG, n, 0, n_len));
-	CHK(SQLBindCol, (Statement, 2, SQL_C_CHAR, c, C_LEN, c_len));
+	CHKBindCol(1, SQL_C_ULONG, n, 0, n_len, "S");
+	CHKBindCol(2, SQL_C_CHAR, c, C_LEN, c_len, "S");
 
 	/* allocate an additional statement */
-	CHK(SQLAllocStmt, (Connection, &stmt2));
+	CHKAllocStmt(&stmt2, "S");
 
-	while ((retcode = SQLFetchScroll(Statement, SQL_FETCH_NEXT, 0)) != SQL_ERROR) {
-		if (retcode == SQL_NO_DATA)
-			break;
-
+	while (CHKFetchScroll(SQL_FETCH_NEXT, 0, "SNo") == SQL_SUCCESS) {
 		/* print, just for debug */
 		for (i = 0; i < num_row; ++i)
 			printf("row %d i %d c %s\n", (int) (i + 1), (int) n[i], c[i]);
@@ -116,14 +85,14 @@ Test0(int use_sql, const char *create_sql, const char *insert_sql, const char *s
 		i = 1;
 		if (i > 0 && i <= num_row) {
 			if (mssql2005)
-				CHK_INFO(SQLSetPos, (Statement, i, use_sql ? SQL_POSITION : SQL_DELETE, SQL_LOCK_NO_CHANGE));
+				CHKSetPos(i, use_sql ? SQL_POSITION : SQL_DELETE, SQL_LOCK_NO_CHANGE, "SI");
 			else
-				CHK(SQLSetPos, (Statement, i, use_sql ? SQL_POSITION : SQL_DELETE, SQL_LOCK_NO_CHANGE));
+				CHKSetPos(i, use_sql ? SQL_POSITION : SQL_DELETE, SQL_LOCK_NO_CHANGE, "S");
 			if (use_sql) {
-				SWAP_STMT(Statement, stmt2);
-				CHK(SQLPrepare, (Statement, (SQLCHAR *) "DELETE FROM #test WHERE CURRENT OF C1", SQL_NTS));
-				CHK(SQLExecute, (Statement));
-				SWAP_STMT(Statement, stmt2);
+				SWAP_STMT(stmt2);
+				CHKPrepare((SQLCHAR *) "DELETE FROM #test WHERE CURRENT OF C1", SQL_NTS, "S");
+				CHKExecute("S");
+				SWAP_STMT(stmt2);
 			}
 		}
 
@@ -133,47 +102,37 @@ Test0(int use_sql, const char *create_sql, const char *insert_sql, const char *s
 			strcpy(c[i - 1], "foo");
 			c_len[i - 1] = 3;
 			if (strstr(select_sql, "#a") == NULL || use_sql) {
-				CHK(SQLSetPos, (Statement, i, use_sql ? SQL_POSITION : SQL_UPDATE, SQL_LOCK_NO_CHANGE));
+				CHKSetPos(i, use_sql ? SQL_POSITION : SQL_UPDATE, SQL_LOCK_NO_CHANGE, "S");
 			} else {
 				unsigned char sqlstate[6];
 				unsigned char msg[256];
 
 				n[i - 1] = 321;
-				retcode = SQLSetPos(Statement, i, use_sql ? SQL_POSITION : SQL_UPDATE, SQL_LOCK_NO_CHANGE);
-				if (retcode != SQL_ERROR) {
-					fprintf(stderr, "Error expected at line %d\n", __LINE__);
-					exit(1);
-				}
+				CHKSetPos(i, use_sql ? SQL_POSITION : SQL_UPDATE, SQL_LOCK_NO_CHANGE, "E");
 
-				retcode = SQLGetDiagRec(SQL_HANDLE_STMT, Statement, 1, sqlstate, NULL, msg, sizeof(msg), NULL);
-				if (retcode != SQL_SUCCESS) {
-					fprintf(stderr, "Error not expected at line %d\n", __LINE__);
-					exit(1);
-				}
+				CHKGetDiagRec(SQL_HANDLE_STMT, odbc_stmt, 1, sqlstate, NULL, msg, sizeof(msg), NULL, "S");
 				if (strstr((char *) msg, "Invalid column name 'c'") == NULL) {
 					fprintf(stderr, "Expected message not found at line %d\n", __LINE__);
 					exit(1);
 				}
 			}
 			if (use_sql) {
-				SWAP_STMT(Statement, stmt2);
-				CHK(SQLPrepare, (Statement, (SQLCHAR *) "UPDATE #test SET c=? WHERE CURRENT OF C1", SQL_NTS));
-				CHK(SQLBindParameter,
-				    (Statement, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_CHAR, C_LEN, 0, c[i - 1], 0, NULL));
-				CHK(SQLExecute, (Statement));
+				SWAP_STMT(stmt2);
+				CHKPrepare((SQLCHAR *) "UPDATE #test SET c=? WHERE CURRENT OF C1", SQL_NTS, "S");
+				CHKBindParameter(1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_CHAR, C_LEN, 0, c[i - 1], 0, NULL, "S");
+				CHKExecute("S");
 				/* FIXME this is not necessary for mssql driver */
-				SQLMoreResults(Statement);
-				SWAP_STMT(Statement, stmt2);
+				SQLMoreResults(odbc_stmt);
+				SWAP_STMT(stmt2);
 			}
 		}
 	}
 
-	if (retcode == SQL_ERROR)
-		ODBC_REPORT_ERROR("SQLFetchScroll");
+	SWAP_STMT(stmt2);
+	CHKFreeStmt(SQL_DROP, "S");
+	SWAP_STMT(stmt2);
 
-	CHK(SQLFreeStmt, (stmt2, SQL_DROP));
-
-	ResetStatement();
+	odbc_reset_statement();
 
 	/* test values */
 	CheckNoRow("IF (SELECT COUNT(*) FROM #test) <> 4 SELECT 1");
@@ -188,13 +147,13 @@ Test0(int use_sql, const char *create_sql, const char *insert_sql, const char *s
 static void
 Test(int use_sql)
 {
-	CommandWithResult(Statement, "DROP TABLE #a");
-	Command(Statement, "CREATE TABLE #a(x int)");
-	Command(Statement, "INSERT INTO #a VALUES(123)");
+	odbc_command_with_result(odbc_stmt, "DROP TABLE #a");
+	odbc_command("CREATE TABLE #a(x int)");
+	odbc_command("INSERT INTO #a VALUES(123)");
 	Test0(use_sql, "CREATE TABLE #test(i int, c varchar(6))", "INSERT INTO #test(c, i) VALUES('%s', %d)", "SELECT x AS i, c FROM #test, #a");
 
 	Test0(use_sql, "CREATE TABLE #test(i int, c varchar(6))", "INSERT INTO #test(c, i) VALUES('%s', %d)", "SELECT i, c FROM #test");
-	if (db_is_microsoft()) {
+	if (odbc_db_is_microsoft()) {
 		Test0(use_sql, "CREATE TABLE #test(i int identity(1,1), c varchar(6))", "INSERT INTO #test(c) VALUES('%s')", "SELECT i, c FROM #test");
 		Test0(use_sql, "CREATE TABLE #test(i int primary key, c varchar(6))", "INSERT INTO #test(c, i) VALUES('%s', %d)", "SELECT i, c FROM #test");
 	}
@@ -204,19 +163,16 @@ Test(int use_sql)
 int
 main(int argc, char *argv[])
 {
-	char version[32];
-	SQLSMALLINT version_len;
+	odbc_connect();
+	odbc_check_cursor();
 
-	Connect();
-
-	SQLGetInfo(Connection, SQL_DBMS_VER, version, sizeof(version), &version_len);
-	if (db_is_microsoft() && strncmp(version, "09.00.", 6) == 0)
+	if (odbc_db_is_microsoft() && odbc_db_version_int() >= 0x09000000u)
 		mssql2005 = 1;
 
 	Test(1);
 
 	Test(0);
 
-	Disconnect();
+	odbc_disconnect();
 	return 0;
 }

@@ -40,7 +40,8 @@ ALL :  \
 	"$(OUTDIR)\hang.exe" \
 	"$(OUTDIR)\null.exe" \
 	"$(OUTDIR)\null2.exe" \
-	"$(OUTDIR)\setnull.exe"
+	"$(OUTDIR)\setnull.exe" \
+	"$(OUTDIR)\numeric.exe"
 
 CLEAN :
 	-@erase "$(INTDIR)*.obj"
@@ -157,6 +158,9 @@ LINK32_FLAGS=kernel32.lib user32.lib gdi32.lib advapi32.lib ws2_32.lib odbc32.li
 "$(OUTDIR)\setnull.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\setnull.obj"
 	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\setnull.obj" /pdb:"$(OUTDIR)\setnull.pdb" /out:"$(OUTDIR)\setnull.exe"
 
+"$(OUTDIR)\numeric.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\numeric.obj"
+	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\numeric.obj" /pdb:"$(OUTDIR)\numeric.pdb" /out:"$(OUTDIR)\numeric.exe"
+
 
 
 CHECK :	
@@ -193,3 +197,4 @@ CHECK :
 	"$(OUTDIR)\null.exe"
 	"$(OUTDIR)\null2.exe"
 	"$(OUTDIR)\setnull.exe"
+	"$(OUTDIR)\numeric.exe"

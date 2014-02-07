@@ -5,7 +5,7 @@
  * either SQLConnect and SQLDriverConnect
  */
 
-static char software_version[] = "$Id: connect2.c,v 1.4 2007/04/12 07:49:30 freddy77 Exp $";
+static char software_version[] = "$Id: connect2.c,v 1.8 2010/07/05 09:20:32 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 static int failed = 0;
@@ -15,28 +15,14 @@ static void init_connect(void);
 static void
 init_connect(void)
 {
-	if (SQLAllocEnv(&Environment) != SQL_SUCCESS) {
-		printf("Unable to allocate env\n");
-		exit(1);
-	}
-	if (SQLAllocConnect(Environment, &Connection) != SQL_SUCCESS) {
-		printf("Unable to allocate connection\n");
-		SQLFreeEnv(Environment);
-		exit(1);
-	}
+	CHKAllocEnv(&odbc_env, "S");
+	CHKAllocConnect(&odbc_conn, "S");
 }
 
 static void
 normal_connect(void)
 {
-	int res;
-
-	res = SQLConnect(Connection, (SQLCHAR *) SERVER, SQL_NTS, (SQLCHAR *) USER, SQL_NTS, (SQLCHAR *) PASSWORD, SQL_NTS);
-	if (!SQL_SUCCEEDED(res)) {
-		fprintf(stderr, "Unable to open data source (ret=%d)\n", res);
-		CheckReturn();
-		exit(1);
-	}
+	CHKR(SQLConnect, (odbc_conn, (SQLCHAR *) odbc_server, SQL_NTS, (SQLCHAR *) odbc_user, SQL_NTS, (SQLCHAR *) odbc_password, SQL_NTS), "SI");
 }
 
 static void
@@ -44,14 +30,8 @@ driver_connect(const char *conn_str)
 {
 	char tmp[1024];
 	SQLSMALLINT len;
-	int res;
 
-	res = SQLDriverConnect(Connection, NULL, (SQLCHAR *) conn_str, SQL_NTS, (SQLCHAR *) tmp, sizeof(tmp), &len, SQL_DRIVER_NOPROMPT);
-	if (!SQL_SUCCEEDED(res)) {
-		fprintf(stderr, "Unable to open data source (ret=%d)\n", res);
-		CheckReturn();
-		exit(1);
-	}
+	CHKDriverConnect(NULL, (SQLCHAR *) conn_str, SQL_NTS, (SQLCHAR *) tmp, sizeof(tmp), &len, SQL_DRIVER_NOPROMPT, "SI");
 }
 
 static void
@@ -59,15 +39,9 @@ check_dbname(const char *dbname)
 {
 	SQLINTEGER len;
 	char out[512];
-	int res;
 
 	len = sizeof(out);
-	res = SQLGetConnectAttr(Connection, SQL_ATTR_CURRENT_CATALOG, (SQLPOINTER) out, sizeof(out), &len);
-	if (!SQL_SUCCEEDED(res)) {
-		fprintf(stderr, "Unable to get database name to %s\n", dbname);
-		CheckReturn();
-		exit(1);
-	}
+	CHKGetConnectAttr(SQL_ATTR_CURRENT_CATALOG, (SQLPOINTER) out, sizeof(out), &len, "SI");
 
 	if (strcmp(out, dbname) != 0) {
 		fprintf(stderr, "Current database (%s) is not %s\n", out, dbname);
@@ -78,23 +52,15 @@ check_dbname(const char *dbname)
 static void
 set_dbname(const char *dbname)
 {
-	int res;
-
-	res = SQLSetConnectAttr(Connection, SQL_ATTR_CURRENT_CATALOG, (SQLPOINTER) dbname, strlen(dbname));
-	if (!SQL_SUCCEEDED(res)) {
-		fprintf(stderr, "Unable to set database name to %s\n", dbname);
-		CheckReturn();
-		exit(1);
-	}
+	CHKSetConnectAttr(SQL_ATTR_CURRENT_CATALOG, (SQLPOINTER) dbname, strlen(dbname), "SI");
 }
 
 int
 main(int argc, char *argv[])
 {
 	char tmp[1024];
-	int res;
 
-	if (read_login_info())
+	if (odbc_read_login_info())
 		exit(1);
 
 	/* try setting db name before connect */
@@ -111,14 +77,10 @@ main(int argc, char *argv[])
 
 	printf("SQLConnect after not existing..\n");
 	strcpy(tmp, "IDontExist");
-	res = SQLSetConnectAttr(Connection, SQL_ATTR_CURRENT_CATALOG, (SQLPOINTER) tmp, strlen(tmp));
-	if (res != SQL_ERROR) {
-		fprintf(stderr, "SQLSetConnectAttr should fail\n");
-		return 1;
-	}
+	CHKSetConnectAttr(SQL_ATTR_CURRENT_CATALOG, (SQLPOINTER) tmp, strlen(tmp), "E");
 	check_dbname("tempdb");
 
-	Disconnect();
+	odbc_disconnect();
 
 	/* try setting db name before connect */
 	printf("SQLConnect before 2..\n");
@@ -126,25 +88,25 @@ main(int argc, char *argv[])
 	set_dbname("tempdb");
 	normal_connect();
 	check_dbname("tempdb");
-	Disconnect();
+	odbc_disconnect();
 
 	/* try connect string with using DSN */
 	printf("SQLDriverConnect before 1..\n");
-	sprintf(tmp, "DSN=%s;UID=%s;PWD=%s;DATABASE=%s;", SERVER, USER, PASSWORD, DATABASE);
+	sprintf(tmp, "DSN=%s;UID=%s;PWD=%s;DATABASE=%s;", odbc_server, odbc_user, odbc_password, odbc_database);
 	init_connect();
 	set_dbname("master");
 	driver_connect(tmp);
-	check_dbname(DATABASE);
-	Disconnect();
+	check_dbname(odbc_database);
+	odbc_disconnect();
 
 	/* try connect string with using DSN */
 	printf("SQLDriverConnect before 2..\n");
-	sprintf(tmp, "DSN=%s;UID=%s;PWD=%s;", SERVER, USER, PASSWORD);
+	sprintf(tmp, "DSN=%s;UID=%s;PWD=%s;", odbc_server, odbc_user, odbc_password);
 	init_connect();
 	set_dbname("tempdb");
 	driver_connect(tmp);
 	check_dbname("tempdb");
-	Disconnect();
+	odbc_disconnect();
 
 	if (failed) {
 		printf("Some tests failed\n");

@@ -1,6 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005  Brian Bruns
- * Copyright (C) 2005 Frediano Ziglio
+ * Copyright (C) 2005-2010  Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -37,7 +37,19 @@
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: connectparams.c,v 1.72 2007/07/01 10:10:52 freddy77 Exp $");
+TDS_RCSID(var, "$Id: connectparams.c,v 1.88 2010/11/09 15:46:42 freddy77 Exp $");
+
+#define ODBC_PARAM(p) static const char odbc_param_##p[] = #p;
+ODBC_PARAM_LIST
+#undef ODBC_PARAM
+
+#ifdef _WIN32
+#define ODBC_PARAM(p) odbc_param_##p,
+static const char *odbc_param_names[] = {
+	ODBC_PARAM_LIST
+};
+#undef ODBC_PARAM
+#endif
 
 #if !HAVE_SQLGETPRIVATEPROFILESTRING
 
@@ -96,22 +108,41 @@ static int SQLGetPrivateProfileString(LPCSTR pszSection, LPCSTR pszEntry, LPCSTR
 #endif
 
 static int
-parse_server(char *server, TDSCONNECTION * connection)
+parse_server(TDS_ERRS *errs, char *server, TDSCONNECTION * connection)
 {
 	char ip[64];
 	char *p = (char *) strchr(server, '\\');
 
 	if (p) {
-		if (!tds_dstr_copy(&connection->instance_name, p+1))
+		if (!tds_dstr_copy(&connection->instance_name, p+1)) {
+			odbc_errs_add(errs, "HY001", NULL);
 			return 0;
+		}
 		*p = 0;
+	} else {
+		p = (char *) strchr(server, ',');
+		if (p && atoi(p+1) > 0) {
+			connection->port = atoi(p+1);
+			*p = 0;
+		}
 	}
 
-	tds_lookup_host(server, ip);
-	if (!tds_dstr_copy(&connection->ip_addr, ip))
+	if (tds_lookup_host(server, ip) == TDS_SUCCEED)
+		tds_dstr_copy(&connection->server_host_name, server);
+
+	if (!tds_dstr_copy(&connection->ip_addr, ip)) {
+		odbc_errs_add(errs, "HY001", NULL);
 		return 0;
+	}
 
 	return 1;
+}
+
+static int
+myGetPrivateProfileString(const char *DSN, const char *key, char *buf)
+{
+	buf[0] = '\0';
+	return SQLGetPrivateProfileString(DSN, key, "", buf, FILENAME_MAX, "odbc.ini");
 }
 
 /** 
@@ -121,68 +152,85 @@ parse_server(char *server, TDSCONNECTION * connection)
  * @return 1 if success 0 otherwhise
  */
 int
-odbc_get_dsn_info(const char *DSN, TDSCONNECTION * connection)
+odbc_get_dsn_info(TDS_ERRS *errs, const char *DSN, TDSCONNECTION * connection)
 {
 	char tmp[FILENAME_MAX];
 	int freetds_conf_less = 1;
-	int address_specified = 0;
 
 	/* use old servername */
-	tmp[0] = '\0';
-	if (SQLGetPrivateProfileString(DSN, "Servername", "", tmp, FILENAME_MAX, "odbc.ini") > 0) {
+	if (myGetPrivateProfileString(DSN, odbc_param_Servername, tmp) > 0) {
 		freetds_conf_less = 0;
 		tds_dstr_copy(&connection->server_name, tmp);
 		tds_read_conf_file(connection, tmp);
+		if (myGetPrivateProfileString(DSN, odbc_param_Server, tmp) > 0) {
+			odbc_errs_add(errs, "HY000", "You cannot specify both SERVERNAME and SERVER");
+			return 0;
+		}
+		if (myGetPrivateProfileString(DSN, odbc_param_Address, tmp) > 0) {
+			odbc_errs_add(errs, "HY000", "You cannot specify both SERVERNAME and ADDRESS");
+			return 0;
+		}
 	}
 
 	/* search for server (compatible with ms one) */
 	if (freetds_conf_less) {
-		tmp[0] = '\0';
-		if (SQLGetPrivateProfileString(DSN, "Address", "", tmp, FILENAME_MAX, "odbc.ini") > 0) {
+		int address_specified = 0;
+
+		if (myGetPrivateProfileString(DSN, odbc_param_Address, tmp) > 0) {
 			address_specified = 1;
 			/* TODO parse like MS */
 			tds_lookup_host(tmp, tmp);
 			tds_dstr_copy(&connection->ip_addr, tmp);
 		}
-
-		tmp[0] = '\0';
-		if (SQLGetPrivateProfileString(DSN, "Server", "", tmp, FILENAME_MAX, "odbc.ini") > 0) {
+		if (myGetPrivateProfileString(DSN, odbc_param_Server, tmp) > 0) {
 			tds_dstr_copy(&connection->server_name, tmp);
 			if (!address_specified) {
-				if (!parse_server(tmp, connection))
+				if (!parse_server(errs, tmp, connection))
 					return 0;
 			}
 		}
 	}
 
-	tmp[0] = '\0';
-	if (SQLGetPrivateProfileString(DSN, "Port", "", tmp, FILENAME_MAX, "odbc.ini") > 0) {
-		connection->port = atoi(tmp);
-	}
+	if (myGetPrivateProfileString(DSN, odbc_param_Port, tmp) > 0)
+		tds_parse_conf_section(TDS_STR_PORT, tmp, connection);
 
-	tmp[0] = '\0';
-	if (SQLGetPrivateProfileString(DSN, "TDS_Version", "", tmp, FILENAME_MAX, "odbc.ini") > 0) {
-		tds_config_verstr(tmp, connection);
-	}
+	if (myGetPrivateProfileString(DSN, odbc_param_TDS_Version, tmp) > 0)
+		tds_parse_conf_section(TDS_STR_VERSION, tmp, connection);
 
-	tmp[0] = '\0';
-	if (SQLGetPrivateProfileString(DSN, "Language", "", tmp, FILENAME_MAX, "odbc.ini") > 0) {
-		tds_dstr_copy(&connection->language, tmp);
-	}
+	if (myGetPrivateProfileString(DSN, odbc_param_Language, tmp) > 0)
+		tds_parse_conf_section(TDS_STR_LANGUAGE, tmp, connection);
 
-	tmp[0] = '\0';
 	if (tds_dstr_isempty(&connection->database)
-	    && SQLGetPrivateProfileString(DSN, "Database", "", tmp, FILENAME_MAX, "odbc.ini") > 0)
+	    && myGetPrivateProfileString(DSN, odbc_param_Database, tmp) > 0)
 		tds_dstr_copy(&connection->database, tmp);
 
-	tmp[0] = '\0';
-	if (SQLGetPrivateProfileString(DSN, "TextSize", "", tmp, FILENAME_MAX, "odbc.ini") > 0) {
-		connection->text_size = atoi(tmp);
-	}
+	if (myGetPrivateProfileString(DSN, odbc_param_TextSize, tmp) > 0)
+		tds_parse_conf_section(TDS_STR_TEXTSZ, tmp, connection);
 
-	tmp[0] = '\0';
-	if (SQLGetPrivateProfileString(DSN, "PacketSize", "", tmp, FILENAME_MAX, "odbc.ini") > 0) {
-		connection->block_size = atoi(tmp);
+	if (myGetPrivateProfileString(DSN, odbc_param_PacketSize, tmp) > 0)
+		tds_parse_conf_section(TDS_STR_BLKSZ, tmp, connection);
+
+	if (myGetPrivateProfileString(DSN, odbc_param_ClientCharset, tmp) > 0)
+		tds_parse_conf_section(TDS_STR_CLCHARSET, tmp, connection);
+
+	if (myGetPrivateProfileString(DSN, odbc_param_DumpFile, tmp) > 0)
+		tds_parse_conf_section(TDS_STR_DUMPFILE, tmp, connection);
+
+	if (myGetPrivateProfileString(DSN, odbc_param_DumpFileAppend, tmp) > 0)
+		tds_parse_conf_section(TDS_STR_APPENDMODE, tmp, connection);
+
+	if (myGetPrivateProfileString(DSN, odbc_param_DebugFlags, tmp) > 0)
+		tds_parse_conf_section(TDS_STR_DEBUGFLAGS, tmp, connection);
+
+	if (myGetPrivateProfileString(DSN, odbc_param_Encryption, tmp) > 0)
+		tds_parse_conf_section(TDS_STR_ENCRYPTION, tmp, connection);
+
+	if (myGetPrivateProfileString(DSN, odbc_param_UseNTLMv2, tmp) > 0)
+		tds_parse_conf_section(TDS_STR_USENTLMV2, tmp, connection);
+
+	if (myGetPrivateProfileString(DSN, odbc_param_Trusted_Connection, tmp) > 0 && tds_config_boolean(tmp)) {
+		tds_dstr_copy(&connection->user_name, "");
+		tds_dstr_copy(&connection->password, "");
 	}
 
 	return 1;
@@ -196,16 +244,28 @@ odbc_get_dsn_info(const char *DSN, TDSCONNECTION * connection)
  * @return 1 if success 0 otherwhise
  */
 int
-odbc_parse_connect_string(const char *connect_string, const char *connect_string_end, TDSCONNECTION * connection)
+odbc_parse_connect_string(TDS_ERRS *errs, const char *connect_string, const char *connect_string_end, TDSCONNECTION * connection,
+			  TDS_PARSED_PARAM *parsed_params)
 {
 	const char *p, *end;
 	DSTR *dest_s, value;
-	int reparse = 0;	/* flag for indicate second parse of string */
-	char option[16];
+	enum { CFG_DSN = 1, CFG_SERVER = 2, CFG_SERVERNAME = 4 };
+	unsigned int cfgs = 0;	/* flags for indicate second parse of string */
+	char option[24];
+	int trusted = 0;
+
+	if (parsed_params)
+		memset(parsed_params, 0, sizeof(*parsed_params)*ODBC_PARAM_SIZE);
 
 	tds_dstr_init(&value);
-	for (p = connect_string; p && *p;) {
+	for (p = connect_string; p < connect_string_end && *p;) {
+		int num_param = -1;
+
 		dest_s = NULL;
+
+		/* handle empty options */
+		while (p < connect_string_end && *p == ';')
+			++p;
 
 		/* parse option */
 		end = (const char *) memchr(p, '=', connect_string_end - p);
@@ -240,55 +300,98 @@ odbc_parse_connect_string(const char *connect_string, const char *connect_string
 		if (!end)
 			end = connect_string_end;
 
-		if (!tds_dstr_copyn(&value, p, end - p))
+		if (!tds_dstr_copyn(&value, p, end - p)) {
+			odbc_errs_add(errs, "HY001", NULL);
 			return 0;
+		}
 
-		if (strcasecmp(option, "SERVER") == 0) {
-			/* ignore if servername or DSN specified */
-			if (!reparse) {
+#define CHK_PARAM(p) (strcasecmp(option, odbc_param_##p) == 0 && (num_param=ODBC_PARAM_##p) >= 0)
+		if (CHK_PARAM(Server)) {
+			/* error if servername or DSN specified */
+			if ((cfgs & (CFG_DSN|CFG_SERVERNAME)) != 0) {
+				tds_dstr_free(&value);
+				odbc_errs_add(errs, "HY000", "Only one between SERVER, SERVERNAME and DSN can be specified");
+				return 0;
+			}
+			if (!cfgs) {
 				dest_s = &connection->server_name;
 				/* not that safe cast but works -- freddy77 */
-				if (!parse_server((char *) tds_dstr_cstr(&value), connection)) {
+				if (!parse_server(errs, (char *) tds_dstr_cstr(&value), connection)) {
 					tds_dstr_free(&value);
 					return 0;
 				}
+				cfgs = CFG_SERVER;
 			}
-		} else if (strcasecmp(option, "SERVERNAME") == 0) {
-			if (!reparse) {
+		} else if (CHK_PARAM(Servername)) {
+			if ((cfgs & (CFG_DSN|CFG_SERVER)) != 0) {
+				tds_dstr_free(&value);
+				odbc_errs_add(errs, "HY000", "Only one between SERVER, SERVERNAME and DSN can be specified");
+				return 0;
+			}
+			if (!cfgs) {
 				tds_dstr_dup(&connection->server_name, &value);
 				tds_read_conf_file(connection, tds_dstr_cstr(&value));
-				reparse = 1;
+				cfgs = CFG_SERVERNAME;
 				p = connect_string;
 				continue;
 			}
-		} else if (strcasecmp(option, "DSN") == 0) {
-			if (!reparse) {
-				odbc_get_dsn_info(tds_dstr_cstr(&value), connection);
-				reparse = 1;
+		} else if (CHK_PARAM(DSN)) {
+			if ((cfgs & (CFG_SERVER|CFG_SERVERNAME)) != 0) {
+				tds_dstr_free(&value);
+				odbc_errs_add(errs, "HY000", "Only one between SERVER, SERVERNAME and DSN can be specified");
+				return 0;
+			}
+			if (!cfgs) {
+				if (!odbc_get_dsn_info(errs, tds_dstr_cstr(&value), connection)) {
+					tds_dstr_free(&value);
+					return 0;
+				}
+				cfgs = CFG_DSN;
 				p = connect_string;
 				continue;
 			}
-		} else if (strcasecmp(option, "DATABASE") == 0) {
+		} else if (CHK_PARAM(Database)) {
 			dest_s = &connection->database;
-		} else if (strcasecmp(option, "UID") == 0) {
+		} else if (CHK_PARAM(UID)) {
 			dest_s = &connection->user_name;
-		} else if (strcasecmp(option, "PWD") == 0) {
+		} else if (CHK_PARAM(PWD)) {
 			dest_s = &connection->password;
-		} else if (strcasecmp(option, "APP") == 0) {
+		} else if (CHK_PARAM(APP)) {
 			dest_s = &connection->app_name;
-		} else if (strcasecmp(option, "WSID") == 0) {
+		} else if (CHK_PARAM(WSID)) {
 			dest_s = &connection->client_host_name;
-		} else if (strcasecmp(option, "LANGUAGE") == 0) {
-			dest_s = &connection->language;
-		} else if (strcasecmp(option, "Port") == 0) {
-			connection->port = atoi(tds_dstr_cstr(&value));
-		} else if (strcasecmp(option, "TDS_Version") == 0) {
-			tds_config_verstr(tds_dstr_cstr(&value), connection);
-		} else if (strcasecmp(option, "TextSize") == 0) {
-			connection->text_size = atoi(tds_dstr_cstr(&value));
-		} else if (strcasecmp(option, "PacketSize") == 0) {
-			connection->block_size = atoi(tds_dstr_cstr(&value));
-			/* TODO "Address" field */
+		} else if (CHK_PARAM(Language)) {
+			tds_parse_conf_section(TDS_STR_LANGUAGE, tds_dstr_cstr(&value), connection);
+		} else if (CHK_PARAM(Port)) {
+			tds_parse_conf_section(TDS_STR_PORT, tds_dstr_cstr(&value), connection);
+		} else if (CHK_PARAM(TDS_Version)) {
+			tds_parse_conf_section(TDS_STR_VERSION, tds_dstr_cstr(&value), connection);
+		} else if (CHK_PARAM(TextSize)) {
+			tds_parse_conf_section(TDS_STR_TEXTSZ, tds_dstr_cstr(&value), connection);
+		} else if (CHK_PARAM(PacketSize)) {
+			tds_parse_conf_section(TDS_STR_BLKSZ, tds_dstr_cstr(&value), connection);
+		} else if (CHK_PARAM(ClientCharset)) {
+			tds_parse_conf_section(TDS_STR_CLCHARSET, tds_dstr_cstr(&value), connection);
+		} else if (CHK_PARAM(DumpFile)) {
+			tds_parse_conf_section(TDS_STR_DUMPFILE, tds_dstr_cstr(&value), connection);
+		} else if (CHK_PARAM(DumpFileAppend)) {
+			tds_parse_conf_section(TDS_STR_APPENDMODE, tds_dstr_cstr(&value), connection);
+		} else if (CHK_PARAM(DebugFlags)) {
+			tds_parse_conf_section(TDS_STR_DEBUGFLAGS, tds_dstr_cstr(&value), connection);
+		} else if (CHK_PARAM(Encryption)) {
+			tds_parse_conf_section(TDS_STR_ENCRYPTION, tds_dstr_cstr(&value), connection);
+		} else if (CHK_PARAM(UseNTLMv2)) {
+			tds_parse_conf_section(TDS_STR_USENTLMV2, tds_dstr_cstr(&value), connection);
+		} else if (CHK_PARAM(Trusted_Connection)) {
+			trusted = tds_config_boolean(tds_dstr_cstr(&value));
+			tdsdump_log(TDS_DBG_INFO1, "trusted %s -> %d\n", tds_dstr_cstr(&value), trusted);
+			num_param = -1;
+			/* TODO odbc_param_Address field */
+		}
+
+		if (num_param >= 0 && parsed_params) {
+			parsed_params[num_param].p = p;
+			parsed_params[num_param].len = end - p;
 		}
 
 		/* copy to destination */
@@ -307,13 +410,56 @@ odbc_parse_connect_string(const char *connect_string, const char *connect_string
 		++p;
 	}
 
+	if (trusted) {
+		if (parsed_params) {
+			parsed_params[ODBC_PARAM_Trusted_Connection].p = "Yes";
+			parsed_params[ODBC_PARAM_Trusted_Connection].len = 3;
+			parsed_params[ODBC_PARAM_UID].p = NULL;
+			parsed_params[ODBC_PARAM_PWD].p = NULL;
+		}
+		tds_dstr_copy(&connection->user_name, "");
+		tds_dstr_copy(&connection->password, "");
+	}
+
 	tds_dstr_free(&value);
-	return p != NULL;
+	return 1;
 }
+
+#ifdef _WIN32
+int
+odbc_build_connect_string(TDS_ERRS *errs, TDS_PARSED_PARAM *params, char **out)
+{
+	unsigned n;
+	size_t len = 1;
+	char *p;
+
+	/* compute string size */
+	for (n = 0; n < ODBC_PARAM_SIZE; ++n) {
+		if (params[n].p)
+			len += strlen(odbc_param_names[n]) + params[n].len + 2;
+	}
+
+	/* allocate */
+	p = (char*) malloc(len);
+	if (!p) {
+		odbc_errs_add(errs, "HY001", NULL);
+		return 0;
+	}
+	*out = p;
+
+	/* build it */
+	for (n = 0; n < ODBC_PARAM_SIZE; ++n) {
+		if (params[n].p)
+			p += sprintf(p, "%s=%.*s;", odbc_param_names[n], (int) params[n].len, params[n].p);
+	}
+	*p = 0;
+	return 1;
+}
+#endif
 
 #if !HAVE_SQLGETPRIVATEPROFILESTRING
 
-#ifdef WIN32
+#ifdef _WIN32
 #  error There is something wrong  in configuration...
 #endif
 
@@ -478,12 +624,26 @@ static const char *const aTDSver[] = {
 	"4.2",
 	"5.0",
 	"7.0",
-	"8.0",
+	"7.1",
+	"7.2",
 	NULL
 };
 
 static const char *const aLanguage[] = {
 	"us_english",
+	NULL
+};
+
+static const char *const aEncryption[] = {
+	TDS_STR_ENCRYPTION_OFF,
+	TDS_STR_ENCRYPTION_REQUEST,
+	TDS_STR_ENCRYPTION_REQUIRE,
+	NULL
+};
+
+static const char *const aBoolean[] = {
+	"Yes",
+	"No",
 	NULL
 };
 
@@ -496,129 +656,132 @@ static const char *aAuth[] = {
 };
 */
 
+static HODBCINSTPROPERTY
+addProperty(HODBCINSTPROPERTY hLastProperty)
+{
+	hLastProperty->pNext = (HODBCINSTPROPERTY) calloc(1, sizeof(ODBCINSTPROPERTY));
+	hLastProperty = hLastProperty->pNext;
+	return hLastProperty;
+}
+
+static HODBCINSTPROPERTY
+definePropertyString(HODBCINSTPROPERTY hLastProperty, const char *name, const char *value, const char *comment)
+{
+	hLastProperty = addProperty(hLastProperty);
+	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_TEXTEDIT;
+	tds_strlcpy(hLastProperty->szName, name, INI_MAX_PROPERTY_NAME);
+	tds_strlcpy(hLastProperty->szValue, value, INI_MAX_PROPERTY_VALUE);
+	hLastProperty->pszHelp = (char *) strdup(comment);
+	return hLastProperty;
+}
+
+static HODBCINSTPROPERTY
+definePropertyBoolean(HODBCINSTPROPERTY hLastProperty, const char *name, const char *value, const char *comment)
+{
+	hLastProperty = addProperty(hLastProperty);
+	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_LISTBOX;
+	hLastProperty->aPromptData = malloc(sizeof(aBoolean));
+	memcpy(hLastProperty->aPromptData, aBoolean, sizeof(aBoolean));
+	tds_strlcpy(hLastProperty->szName, name, INI_MAX_PROPERTY_NAME);
+	tds_strlcpy(hLastProperty->szValue, value, INI_MAX_PROPERTY_VALUE);
+	hLastProperty->pszHelp = (char *) strdup(comment);
+	return hLastProperty;
+}
+
+static HODBCINSTPROPERTY
+definePropertyHidden(HODBCINSTPROPERTY hLastProperty, const char *name, const char *value, const char *comment)
+{
+	hLastProperty = addProperty(hLastProperty);
+	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_HIDDEN;
+	tds_strlcpy(hLastProperty->szName, name, INI_MAX_PROPERTY_NAME);
+	tds_strlcpy(hLastProperty->szValue, value, INI_MAX_PROPERTY_VALUE);
+	hLastProperty->pszHelp = (char *) strdup(comment);
+	return hLastProperty;
+}
+
+static HODBCINSTPROPERTY
+definePropertyList(HODBCINSTPROPERTY hLastProperty, const char *name, const char *value, const void *list, int size, const char *comment)
+{
+	hLastProperty = addProperty(hLastProperty);
+	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_LISTBOX;
+	hLastProperty->aPromptData = malloc(size);
+	memcpy(hLastProperty->aPromptData, list, size);
+	tds_strlcpy(hLastProperty->szName, name, INI_MAX_PROPERTY_NAME);
+	tds_strlcpy(hLastProperty->szValue, value, INI_MAX_PROPERTY_VALUE);
+	hLastProperty->pszHelp = (char *) strdup(comment);
+	return hLastProperty;
+}
+
 int
 ODBCINSTGetProperties(HODBCINSTPROPERTY hLastProperty)
 {
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_TEXTEDIT;
-	tds_strlcpy(hLastProperty->szName, "Servername", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("Name of FreeTDS connection to connect to.\n"
-						 "This server name refer to entry in freetds.conf file, not real server name.\n"
-						 "This property cannot be used with Server property.");
+	hLastProperty = definePropertyString(hLastProperty, odbc_param_Servername, "", 
+		"Name of FreeTDS connection to connect to.\n"
+		"This server name refer to entry in freetds.conf file, not real server name.\n"
+		"This property cannot be used with Server property.");
 
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_TEXTEDIT;
-	tds_strlcpy(hLastProperty->szName, "Server", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("Name of server to connect to.\n"
-						 "This should be the name of real server.\n"
-						 "This property cannot be used with Servername property.");
+	hLastProperty = definePropertyString(hLastProperty, odbc_param_Server, "", 
+		"Name of server to connect to.\n"
+		"This should be the name of real server.\n"
+		"This property cannot be used with Servername property.");
 
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_TEXTEDIT;
-	tds_strlcpy(hLastProperty->szName, "Address", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("The hostname or ip address of the server.");
+	hLastProperty = definePropertyString(hLastProperty, odbc_param_Address, "", 
+		"The hostname or ip address of the server.");
 
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_TEXTEDIT;
-	tds_strlcpy(hLastProperty->szName, "Port", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "1433", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("TCP/IP Port to connect to.");
+	hLastProperty = definePropertyString(hLastProperty, odbc_param_Port, "1433", 
+		"TCP/IP Port to connect to.");
 
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_TEXTEDIT;
-	tds_strlcpy(hLastProperty->szName, "Database", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("Default database.");
+	hLastProperty = definePropertyString(hLastProperty, odbc_param_Database, "", 
+		"Default database.");
 
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_LISTBOX;
-	hLastProperty->aPromptData = malloc(sizeof(aTDSver));
-	memcpy(hLastProperty->aPromptData, aTDSver, sizeof(aTDSver));
-	tds_strlcpy(hLastProperty->szName, "TDS_Version", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "4.2", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("The TDS protocol version.\n"
-						 " 4.2 MSSQL 6.5 or Sybase < 10.x\n"
-						 " 5.0 Sybase >= 10.x\n" " 7.0 MSSQL 7 or MSSQL 2000\n" " 8.0 MSSQL 2000");
+	hLastProperty = definePropertyList(hLastProperty, odbc_param_TDS_Version, "4.2", (void*) aTDSver, sizeof(aTDSver),
+		"The TDS protocol version.\n"
+		" 4.2 MSSQL 6.5 or Sybase < 10.x\n"
+		" 5.0 Sybase >= 10.x\n"
+		" 7.0 MSSQL 7\n"
+		" 7.1 MSSQL 2000\n"
+		" 7.2 MSSQL 2005");
 
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_COMBOBOX;
-	hLastProperty->aPromptData = malloc(sizeof(aLanguage));
-	memcpy(hLastProperty->aPromptData, aLanguage, sizeof(aLanguage));
-	tds_strlcpy(hLastProperty->szName, "Language", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "us_english", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("The default language setting.");
+	hLastProperty = definePropertyList(hLastProperty, odbc_param_Language, "us_english", (void*) aLanguage, sizeof(aLanguage),
+		"The default language setting.");
 
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_HIDDEN;
-	tds_strlcpy(hLastProperty->szName, "TextSize", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("Text datatype limit.");
+	hLastProperty = definePropertyHidden(hLastProperty, odbc_param_TextSize, "", 
+		"Text datatype limit.");
 
 	/* ??? in odbc.ini ??? */
 /*
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_TEXTEDIT;
-	tds_strlcpy(hLastProperty->szName, "UID", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("User ID (Beware of security issues).");
+	hLastProperty = definePropertyString(hLastProperty, odbc_param_UID, "", 
+		"User ID (Beware of security issues).");
 
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_TEXTEDIT;
-	tds_strlcpy(hLastProperty->szName, "PWD", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("Password (Beware of security issues).");
+	hLastProperty = definePropertyString(hLastProperty, odbc_param_PWD, "", 
+		"Password (Beware of security issues).");
 */
 
 /*
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_LISTBOX;
-	hLastProperty->aPromptData = malloc(sizeof(aAuth));
-	memcpy(hLastProperty->aPromptData, aAuth, sizeof(aAuth));
-	tds_strlcpy(hLastProperty->szName, "Authentication", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "Server", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("The server authentication mechanism.");
+	hLastProperty = definePropertyList(hLastProperty, odbc_param_Authentication, "Server", aAuth, sizeof(aAuth),
+		"The server authentication mechanism.");
+
+	hLastProperty = definePropertyString(hLastProperty, odbc_param_Domain, "", 
+		"The default domain to use when using Domain Authentication.");
 */
 
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_TEXTEDIT;
-	tds_strlcpy(hLastProperty->szName, "Domain", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("The default domain to use when using Domain Authentication.");
+	hLastProperty = definePropertyString(hLastProperty, odbc_param_PacketSize, "", 
+		"Size of network packets.");
 
-	hLastProperty->pNext = (HODBCINSTPROPERTY) malloc(sizeof(ODBCINSTPROPERTY));
-	hLastProperty = hLastProperty->pNext;
-	memset(hLastProperty, 0, sizeof(ODBCINSTPROPERTY));
-	hLastProperty->nPromptType = ODBCINST_PROMPTTYPE_TEXTEDIT;
-	tds_strlcpy(hLastProperty->szName, "PacketSize", INI_MAX_PROPERTY_NAME);
-	tds_strlcpy(hLastProperty->szValue, "", INI_MAX_PROPERTY_VALUE);
-	hLastProperty->pszHelp = (char *) strdup("Size of network packets.");
+	hLastProperty = definePropertyString(hLastProperty, odbc_param_ClientCharset, "", 
+		"The client character set name to convert application characters to UCS-2 in TDS 7.0 and higher.");
+
+	hLastProperty = definePropertyString(hLastProperty, odbc_param_DumpFile, "",
+		"Specifies the location of a tds dump file and turns on logging.");
+
+	hLastProperty = definePropertyBoolean(hLastProperty, odbc_param_DumpFileAppend, "",
+		"Appends dump file instead of overwriting it. Useful for debugging when many processes are active.");
+
+	hLastProperty = definePropertyString(hLastProperty, odbc_param_DebugFlags, "", 
+		"Sets granularity of logging. A set of bit that specify levels and informations. See table below for bit specification.");
+
+	hLastProperty = definePropertyList(hLastProperty, odbc_param_Encryption, TDS_STR_ENCRYPTION_OFF, aEncryption, sizeof(aEncryption),
+		"The encryption method.");
 
 	return 1;
 }

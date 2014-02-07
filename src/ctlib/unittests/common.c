@@ -12,11 +12,21 @@
 #include <string.h>
 #endif /* HAVE_STRING_H */
 
+#if HAVE_UNISTD_H
+#include <unistd.h>
+#endif
+
+#ifndef DBNTWIN32
+#include "replacements.h"
+#endif
+
 #include <ctpublic.h>
 #include "common.h"
+#ifdef TDS_STATIC_CAST
 #include "ctlib.h"
+#endif
 
-static char software_version[] = "$Id: common.c,v 1.16 2007/12/26 18:45:17 freddy77 Exp $";
+static char software_version[] = "$Id: common.c,v 1.23 2010/04/13 13:19:12 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 char USER[512];
@@ -26,28 +36,62 @@ char DATABASE[512];
 
 COMMON_PWD common_pwd = {0};
 
+static char *DIRNAME = NULL;
+static const char *BASENAME = NULL;
+
+static const char *PWD = "../../../PWD";
+
+
 int cslibmsg_cb_invoked = 0;
 int clientmsg_cb_invoked = 0;
 int servermsg_cb_invoked = 0;
 
+static CS_RETCODE continue_logging_in(CS_CONTEXT ** ctx, CS_CONNECTION ** conn, CS_COMMAND ** cmd, int verbose);
+
+#if defined(__MINGW32__) || defined(_MSC_VER)
+static char *
+tds_dirname(char* path)
+{
+	char *p, *p2;
+
+	for (p = path + strlen(path); --p > path && (*p == '/' || *p == '\\');)
+		*p = '\0';
+
+	p = strrchr(path, '/');
+	if (!p)
+		p = path;
+	p2 = strrchr(p, '\\');
+	if (p2)
+		p = p2;
+	*p = 0;
+	return path;
+}
+#define dirname tds_dirname
+
+#endif
+
 CS_RETCODE
 read_login_info(void)
 {
-	FILE *in;
+	FILE *in = NULL;
 	char line[512];
 	char *s1, *s2;
 	
 	if (common_pwd.initialized) {
 		strcpy(USER, common_pwd.USER);
-		strcpy(SERVER, common_pwd.SERVER);
 		strcpy(PASSWORD, common_pwd.PASSWORD);
+		strcpy(SERVER, common_pwd.SERVER);
 		strcpy(DATABASE, common_pwd.DATABASE);
 		return CS_SUCCEED;
 	}
 
-	in = fopen("../../../PWD", "r");
+	s1 = getenv("TDSPWDFILE");
+	if (s1 && s1[0])
+		in = fopen(s1, "r");
+	if (!in)
+		in = fopen(PWD, "r");
 	if (!in) {
-		fprintf(stderr, "Can not open PWD file\n\n");
+		fprintf(stderr, "Can not open PWD file \"%s\"\n\n", PWD);
 		return CS_FAIL;
 	}
 
@@ -71,21 +115,107 @@ read_login_info(void)
 	return CS_SUCCEED;
 }
 
-CS_RETCODE
-try_ctlogin(CS_CONTEXT ** ctx, CS_CONNECTION ** conn, CS_COMMAND ** cmd, int verbose)
+static CS_RETCODE
+establish_login(int argc, char **argv)
 {
-CS_RETCODE ret;
-char query[30];
-TDSCONTEXT *tds_ctx;
+	extern char *optarg;
+	extern int optind;
+	COMMON_PWD options = {0};
+#if !defined(__MINGW32__) && !defined(_MSC_VER)
+	int ch;
+#endif
 
-	/* read login information from PWD file */
-	ret = read_login_info();
-	if (ret != CS_SUCCEED) {
+	BASENAME = tds_basename((char *)argv[0]);
+	DIRNAME = dirname((char *)argv[0]);
+	
+#if !defined(__MINGW32__) && !defined(_MSC_VER)
+	/* process command line options (handy for manual testing) */
+	while ((ch = getopt(argc, argv, "U:P:S:D:f:m:v")) != -1) {
+		switch (ch) {
+		case 'U':
+			strcpy(options.USER, optarg);
+			break;
+		case 'P':
+			strcpy(options.PASSWORD, optarg);
+			break;
+		case 'S':
+			strcpy(options.SERVER, optarg);
+			break;
+		case 'D':
+			strcpy(options.DATABASE, optarg);
+			break;
+		case 'f': /* override default PWD file */
+			PWD = strdup(optarg);
+			break;
+		case 'm':
+			common_pwd.maxlength = strtol(optarg, NULL, 10);
+		case 'v':
+			common_pwd.fverbose = 1;
+			break;
+		case '?':
+		default:
+			fprintf(stderr, "usage:  %s [-v] [-f PWD]\n"
+					"        [-U username] [-P password]\n"
+					"        [-S servername] [-D database]\n"
+					, BASENAME);
+			exit(1);
+		}
+	}
+#endif
+	read_login_info();
+	
+	/* override PWD file with command-line options */
+	
+	if (*options.USER)
+		strcpy(USER, options.USER);
+	if (*options.PASSWORD)
+		strcpy(PASSWORD, options.PASSWORD);
+	if (*options.SERVER)
+		strcpy(SERVER, options.SERVER);
+	if (*options.DATABASE)
+		strcpy(DATABASE, options.DATABASE);
+	
+	return (*USER && *SERVER && *DATABASE)? CS_SUCCEED : CS_FAIL;
+}
+
+CS_RETCODE
+try_ctlogin_with_options(int argc, char **argv, CS_CONTEXT ** ctx, CS_CONNECTION ** conn, CS_COMMAND ** cmd, int verbose)
+{
+	CS_RETCODE ret;
+
+	if ((ret = establish_login(argc, argv)) != CS_SUCCEED) {
 		if (verbose) {
 			fprintf(stderr, "read_login_info() failed!\n");
 		}
 		return ret;
 	}
+	return continue_logging_in(ctx, conn, cmd, verbose);
+}
+
+/* old way: because I'm too lazy to change every unit test */
+CS_RETCODE
+try_ctlogin(CS_CONTEXT ** ctx, CS_CONNECTION ** conn, CS_COMMAND ** cmd, int verbose)
+{
+	CS_RETCODE ret;
+
+	if ((ret = read_login_info()) != CS_SUCCEED) {
+		if (verbose) {
+			fprintf(stderr, "read_login_info() failed!\n");
+		}
+		return ret;
+	}
+	return continue_logging_in(ctx, conn, cmd, verbose);
+}
+
+CS_RETCODE
+continue_logging_in(CS_CONTEXT ** ctx, CS_CONNECTION ** conn, CS_COMMAND ** cmd, int verbose)
+{
+	CS_RETCODE ret;
+	char query[30];
+#ifdef TDS_STATIC_CAST
+	TDSCONTEXT *tds_ctx;
+#endif
+
 	ret = cs_ctx_alloc(CS_VERSION_100, ctx);
 	if (ret != CS_SUCCEED) {
 		if (verbose) {
@@ -94,18 +224,29 @@ TDSCONTEXT *tds_ctx;
 		return ret;
 	}
 
+#ifdef TDS_STATIC_CAST
 	/* Force default date format, some tests rely on it */
 	tds_ctx = (TDSCONTEXT *) (*ctx)->tds_ctx;
 	if (tds_ctx && tds_ctx->locale && tds_ctx->locale->date_fmt) {
 		free(tds_ctx->locale->date_fmt);
 		tds_ctx->locale->date_fmt = strdup("%b %d %Y %I:%M%p");
 	}
+#endif
 
 	ret = ct_init(*ctx, CS_VERSION_100);
 	if (ret != CS_SUCCEED) {
 		if (verbose) {
 			fprintf(stderr, "Library Init failed!\n");
 		}
+		return ret;
+	}
+	if ((ret = ct_callback(*ctx, NULL, CS_SET, CS_CLIENTMSG_CB, 
+			       (CS_VOID*) clientmsg_cb)) != CS_SUCCEED) {
+		fprintf(stderr, "ct_callback() failed\n");
+		return ret;
+	}
+	if ((ret = ct_callback(*ctx, NULL, CS_SET, CS_SERVERMSG_CB, servermsg_cb)) != CS_SUCCEED) {
+		fprintf(stderr, "ct_callback() failed\n");
 		return ret;
 	}
 	ret = ct_con_alloc(*ctx, conn);
@@ -129,6 +270,9 @@ TDSCONTEXT *tds_ctx;
 		}
 		return ret;
 	}
+	
+	printf("connecting as %s to %s.%s\n", USER, SERVER, DATABASE);
+	
 	ret = ct_connect(*conn, SERVER, CS_NULLTERM);
 	if (ret != CS_SUCCEED) {
 		if (verbose) {
@@ -263,13 +407,18 @@ CS_RETCODE
 servermsg_cb(CS_CONTEXT * context, CS_CONNECTION * connection, CS_SERVERMSG * srvmsg)
 {
 	servermsg_cb_invoked++;
-	fprintf(stderr, "\nServer Message:\n");
-	fprintf(stderr, "number %d severity %d state %d line %d\n",
+
+	if (srvmsg->msgnumber == 5701 || srvmsg->msgnumber == 5703) {
+		fprintf(stderr, "%s\n", srvmsg->text);
+		return CS_SUCCEED;
+	}
+		
+	fprintf(stderr, "%s Message %d severity %d state %d line %d:\n",
+		srvmsg->svrnlen > 0? srvmsg->svrname : "Server", 
 		srvmsg->msgnumber, srvmsg->severity, srvmsg->state, srvmsg->line);
-	fprintf(stderr, "server: %s\n", (srvmsg->svrnlen > 0)
-		? srvmsg->svrname : "(null)");
-	fprintf(stderr, "proc: %s\n", (srvmsg->proclen > 0)
-		? srvmsg->proc : "(null)");
-	fprintf(stderr, "text: %s\n", srvmsg->text);
+	if (srvmsg->proclen > 0) 
+		fprintf(stderr, "proc %s: ", srvmsg->proc);
+	fprintf(stderr, "\t\"%s\"\n", srvmsg->text);
+
 	return CS_SUCCEED;
 }

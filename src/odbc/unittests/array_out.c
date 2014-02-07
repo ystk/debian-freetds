@@ -3,7 +3,7 @@
 
 /* Test using array binding */
 
-static char software_version[] = "$Id: array_out.c,v 1.11 2007/11/26 20:03:17 freddy77 Exp $";
+static char software_version[] = "$Id: array_out.c,v 1.17 2010/09/22 07:03:59 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 static const char *test_query = NULL;
@@ -18,7 +18,7 @@ typedef struct
 } Record;
 
 static void
-query_test(SQLRETURN expected, const char *expected_status)
+query_test(const char* expected, const char *expected_status)
 {
 #define ARRAY_SIZE 10
 
@@ -30,16 +30,15 @@ query_test(SQLRETURN expected, const char *expected_status)
 	int desc_len = trunc ? 4 : 51;
 	int rec_size = 0;
 	Record *rec = NULL;
-	RETCODE ret;
 	char status[20];
 
-	assert(Statement != SQL_NULL_HSTMT);
-	ResetStatement();
+	assert(odbc_stmt != SQL_NULL_HSTMT);
+	odbc_reset_statement();
 
-	SQLSetStmtAttr(Statement, SQL_ATTR_ROW_STATUS_PTR, statuses, 0);
-	SQLSetStmtAttr(Statement, SQL_ATTR_ROW_ARRAY_SIZE, (void *) ARRAY_SIZE, 0);
-	SQLSetStmtAttr(Statement, SQL_ATTR_ROWS_FETCHED_PTR, &processed, 0);
-	SQLSetStmtAttr(Statement, SQL_ATTR_ROW_BIND_TYPE, SQL_BIND_BY_COLUMN, 0);
+	SQLSetStmtAttr(odbc_stmt, SQL_ATTR_ROW_STATUS_PTR, statuses, 0);
+	SQLSetStmtAttr(odbc_stmt, SQL_ATTR_ROW_ARRAY_SIZE, (void *) ARRAY_SIZE, 0);
+	SQLSetStmtAttr(odbc_stmt, SQL_ATTR_ROWS_FETCHED_PTR, &processed, 0);
+	SQLSetStmtAttr(odbc_stmt, SQL_ATTR_ROW_BIND_TYPE, SQL_BIND_BY_COLUMN, 0);
 
 	if (!record_bind) {
 		ids = (SQLUINTEGER *) malloc(sizeof(SQLUINTEGER) * ARRAY_SIZE);
@@ -48,8 +47,8 @@ query_test(SQLRETURN expected, const char *expected_status)
 		id_lens = (SQLLEN *) malloc(sizeof(SQLLEN) * ARRAY_SIZE);
 		assert(descs && ids && desc_lens && id_lens);
 	} else {
-		rec_size = sizeof(Record) + ((sizeof(SQLCHAR) * desc_len + sizeof(SQLINTEGER) - 1) & ~(sizeof(SQLINTEGER) - 1));
-		SQLSetStmtAttr(Statement, SQL_ATTR_ROW_BIND_TYPE, int2ptr(rec_size), 0);
+		rec_size = (sizeof(Record) + (sizeof(SQLCHAR) * desc_len + sizeof(SQLLEN) - 1)) & ~(sizeof(SQLLEN) - 1);
+		SQLSetStmtAttr(odbc_stmt, SQL_ATTR_ROW_BIND_TYPE, int2ptr(rec_size), 0);
 		rec = (Record *) malloc(rec_size * ARRAY_SIZE);
 		ids = &rec->id;
 		id_lens = &rec->id_len;
@@ -71,16 +70,12 @@ query_test(SQLRETURN expected, const char *expected_status)
 		DESC_LENS(i) = -i;
 	}
 
-	SQLBindCol(Statement, 1, SQL_C_ULONG, &IDS(0), 0, &ID_LENS(0));
-	SQLBindCol(Statement, 2, SQL_C_CHAR, DESCS(0), desc_len, &DESC_LENS(0));
+	SQLBindCol(odbc_stmt, 1, SQL_C_ULONG, &IDS(0), 0, &ID_LENS(0));
+	SQLBindCol(odbc_stmt, 2, SQL_C_CHAR, DESCS(0), desc_len, &DESC_LENS(0));
 
-	ret = SQLExecDirect(Statement, (SQLCHAR *) test_query, SQL_NTS);
-	if (ret != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Invalid result");
+	CHKExecDirect((SQLCHAR *) test_query, SQL_NTS, "S");
 
-	ret = SQLFetch(Statement);
-	if (ret != expected)
-		ODBC_REPORT_ERROR("SQLFetch invalid result");
+	CHKFetch(expected);
 
 	assert(processed <= ARRAY_SIZE);
 
@@ -137,41 +132,41 @@ main(int argc, char *argv[])
 {
 	int i;
 
-	use_odbc_version3 = 1;
-	Connect();
+	odbc_use_version3 = 1;
+	odbc_connect();
 
-	Command(Statement, "CREATE TABLE #odbc_test(i INT, t TEXT)");
+	odbc_command("CREATE TABLE #odbc_test(i INT, t TEXT)");
 	for (i = 0; i < 10; ++i) {
 		char buf[128];
 
 		sprintf(buf, "INSERT INTO #odbc_test(i, t) VALUES(%d, '%crow number %d')", i + 1, 'a' + i, i * 13);
-		Command(Statement, buf);
+		odbc_command(buf);
 	}
 
-	ResetStatement();
+	odbc_reset_statement();
 
 	test_query = "SELECT * FROM #odbc_test ORDER BY i";
 	printf("test line %d\n", __LINE__);
-	query_test(SQL_SUCCESS, "VVVVVVVVVV");
+	query_test("S", "VVVVVVVVVV");
 
 	test_query = "SELECT * FROM #odbc_test WHERE i < 7 ORDER BY i";
 	printf("test line %d\n", __LINE__);
-	query_test(SQL_SUCCESS, "VVVVVV");
+	query_test("S", "VVVVVV");
 
 	/* binding row */
 	test_query = "SELECT * FROM #odbc_test ORDER BY i";
 	record_bind = 1;
 	printf("test line %d\n", __LINE__);
-	query_test(SQL_SUCCESS, "VVVVVVVVVV");
+	query_test("S", "VVVVVVVVVV");
 
 	/* row and truncation */
 	trunc = 1;
 	printf("test line %d\n", __LINE__);
-	query_test(SQL_SUCCESS_WITH_INFO, "!!!!!!!!!!");
+	query_test("I", "!!!!!!!!!!");
 
 	/* TODO bind offset, SQLGetData, no bind, error */
 
-	Disconnect();
+	odbc_disconnect();
 
 	printf("Success!.\n");
 	return 0;

@@ -32,7 +32,7 @@
 /* #include "fortify.h" */
 
 
-TDS_RCSID(var, "$Id: ctutil.c,v 1.28 2007/01/07 16:13:17 jklowden Exp $");
+TDS_RCSID(var, "$Id: ctutil.c,v 1.31 2010/08/04 07:09:19 freddy77 Exp $");
 
 /*
  * test include consistency 
@@ -50,8 +50,6 @@ TDS_RCSID(var, "$Id: ctutil.c,v 1.28 2007/01/07 16:13:17 jklowden Exp $");
 
 #define TEST_EQUAL(t,a,b) COMPILE_CHECK(t,a==b)
 
-TEST_EQUAL(t01,CS_FAIL,TDS_FAIL);
-TEST_EQUAL(t02,CS_SUCCEED,TDS_SUCCEED);
 TEST_EQUAL(t03,CS_NULLTERM,TDS_NULLTERM);
 TEST_EQUAL(t04,CS_CMD_SUCCEED,TDS_CMD_SUCCEED);
 TEST_EQUAL(t05,CS_CMD_FAIL,TDS_CMD_FAIL);
@@ -67,7 +65,7 @@ TEST_EQUAL(t14,CS_MSG_RESULT,TDS_MSG_RESULT);
 TEST_EQUAL(t15,CS_DESCRIBE_RESULT,TDS_DESCRIBE_RESULT);
 
 #define TEST_ATTRIBUTE(t,sa,fa,sb,fb) \
-	COMPILE_CHECK(t,sizeof(((sa*)0)->fa) == sizeof(((sb*)0)->fb) && (int)(&((sa*)0)->fa) == (int)(&((sb*)0)->fb))
+	COMPILE_CHECK(t,sizeof(((sa*)0)->fa) == sizeof(((sb*)0)->fb) && (TDS_INTPTR)(&((sa*)0)->fa) == (TDS_INTPTR)(&((sb*)0)->fb))
 
 TEST_ATTRIBUTE(t21,TDS_MONEY4,mny4,CS_MONEY4,mny4);
 TEST_ATTRIBUTE(t22,TDS_OLD_MONEY,mnyhigh,CS_MONEY,mnyhigh);
@@ -97,6 +95,8 @@ _ct_handle_client_message(const TDSCONTEXT * ctx_tds, TDSSOCKET * tds, TDSMESSAG
 	CS_CONNECTION *con = NULL;
 	CS_CONTEXT *ctx = NULL;
 	int ret = (int) CS_SUCCEED;
+
+	tdsdump_log(TDS_DBG_FUNC, "_ct_handle_client_message(%p, %p, %p)\n", ctx_tds, tds, msg);
 
 	if (tds && tds->parent) {
 		con = (CS_CONNECTION *) tds->parent;
@@ -148,7 +148,9 @@ _ct_handle_server_message(const TDSCONTEXT * ctx_tds, TDSSOCKET * tds, TDSMESSAG
 	CS_SERVERMSG errmsg;
 	CS_CONNECTION *con = NULL;
 	CS_CONTEXT *ctx = NULL;
-	int ret = (int) CS_SUCCEED;
+	CS_RETCODE ret = CS_SUCCEED;
+
+	tdsdump_log(TDS_DBG_FUNC, "_ct_handle_server_message(%p, %p, %p)\n", ctx_tds, tds, msg);
 
 	if (tds && tds->parent) {
 		con = (CS_CONNECTION *) tds->parent;
@@ -183,5 +185,5 @@ _ct_handle_server_message(const TDSCONTEXT * ctx_tds, TDSSOCKET * tds, TDSMESSAG
 	} else if (con->ctx->_servermsg_cb) {
 		ret = con->ctx->_servermsg_cb(con->ctx, con, &errmsg);
 	}
-	return ret;
+	return ret == CS_SUCCEED ? TDS_SUCCEED : TDS_FAIL;
 }

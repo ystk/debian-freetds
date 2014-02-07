@@ -2,7 +2,7 @@
 
 /* Test for SQLMoreResults */
 
-static char software_version[] = "$Id: t0004.c,v 1.15 2006/03/23 14:53:44 freddy77 Exp $";
+static char software_version[] = "$Id: t0004.c,v 1.18 2010/07/05 09:20:33 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 static void
@@ -15,65 +15,38 @@ Test(int use_indicator)
 	strcpy(buf, "I don't exist");
 	ind = strlen(buf);
 
-	if (SQLBindParameter(Statement, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, 20, 0, buf, 128, pind) != SQL_SUCCESS) {
-		printf("Unable to bind parameter\n");
-		exit(1);
-	}
+	CHKBindParameter(1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, 20, 0, buf, 128, pind, "S");
 
-	if (SQLPrepare(Statement, (SQLCHAR *) "SELECT id, name FROM master..sysobjects WHERE name = ?", SQL_NTS) != SQL_SUCCESS) {
-		printf("Unable to prepare statement\n");
-		exit(1);
-	}
+	CHKPrepare((SQLCHAR *) "SELECT id, name FROM master..sysobjects WHERE name = ?", SQL_NTS, "S");
 
-	if (SQLExecute(Statement) != SQL_SUCCESS) {
-		printf("Unable to execute statement\n");
-		exit(1);
-	}
+	CHKExecute("S");
 
-	if (SQLFetch(Statement) != SQL_NO_DATA) {
-		printf("Data not expected\n");
-		exit(1);
-	}
+	CHKFetch("No");
 
-	if (SQLMoreResults(Statement) != SQL_NO_DATA) {
-		printf("Not expected another recordset\n");
-		exit(1);
-	}
+	CHKMoreResults("No");
 
 	/* use same binding above */
 	strcpy(buf, "sysobjects");
 	ind = strlen(buf);
 
-	if (SQLExecute(Statement) != SQL_SUCCESS) {
-		printf("Unable to execute statement\n");
-		exit(1);
-	}
+	CHKExecute("S");
 
-	if (SQLFetch(Statement) != SQL_SUCCESS) {
-		printf("Data expected\n");
-		exit(1);
-	}
+	CHKFetch("S");
 
-	if (SQLFetch(Statement) != SQL_NO_DATA) {
-		printf("Data not expected\n");
-		exit(1);
-	}
+	CHKFetch("No");
 
-	if (SQLMoreResults(Statement) != SQL_NO_DATA) {
-		printf("Not expected another recordset\n");
-		exit(1);
-	}
+	CHKMoreResults("No");
 }
 
 int
 main(int argc, char *argv[])
 {
-	Connect();
+	odbc_connect();
 
 	Test(1);
 	Test(0);
 
-	Disconnect();
+	odbc_disconnect();
 
 	printf("Done.\n");
 	return 0;

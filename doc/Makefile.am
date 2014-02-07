@@ -2,7 +2,7 @@
 # Converting DocBook to HTML (several small files)
 # http://www.freebsd.org/tutorials/docproj-primer/x3132.html#AEN3140
 
-# $Id: Makefile.am,v 1.62.2.1 2008/03/23 17:29:40 jklowden Exp $
+# $Id: Makefile.am,v 1.65.4.1 2011/04/09 13:57:58 jklowden Exp $
 
 SHELL = /bin/sh
 TXT2MAN = txt2man
@@ -34,13 +34,16 @@ EXTRA_DIST =	api_status.txt bcp.txt cap.txt getting_started.txt \
 		$(man_MANS) freebcp.txt tsql.txt osql.txt fisql.txt \
 		bsqldb.txt bsqlodbc.txt defncopy.txt datacopy.txt \
 		$(DOCDIR)/userguide $(DOCDIR)/reference \
-		$(IMAGES) $(CALLOUTS) grep_sample_code \
+		images grep_sample_code \
 		tds_ssl.html
+
+dist-hook:
+	find $(distdir)/doc -name CVS -exec rm -rf {} ';'
 
 man_MANS	= freebcp.1 tsql.1 osql.1 bsqldb.1 bsqlodbc.1 defncopy.1 datacopy.1 fisql.1 \
 		  freetds.conf.5
  
-nobase_data_DATA	= $(DOCDIR)/reference/index.html $(DOCDIR)/userguide/index.htm
+noinst_DATA	= $(DOCDIR)/reference/index.html $(DOCDIR)/userguide/index.htm
 
 $(DOCDIR)/userguide: $(DOCDIR)/userguide/index.htm
 
@@ -110,7 +113,7 @@ datacopy.1: datacopy.txt
 
 # If we built the documentation ourselves, install that, 
 # else if we have access to distributed documentation, install that.  
-install-data-local: installdirs $(DOCDIR)/reference/index.html $(DOCDIR)/userguide/index.htm
+install-data-local: installdirs $(noinst_DATA)
 	$(mkinstalldirs) $(DOCDIR) 2>&1
 	if test -r $(DOCDIR)/userguide ; then d=.; else d="$(srcdir)"; fi; \
 	find $$d/$(DOCDIR)/userguide \( -type f -o -type l \) -exec \
@@ -169,7 +172,8 @@ $(DOCDIR)/userguide/index.htm: userguide.sgml  userguide.dsl.in api_status.txt
 ##		The crazy path is due to the above 'cd' command
 		SRCDOC=../../../$(srcdir); \
 		if test ! -r userguide.sgml; then ln -s $${SRCDOC}/userguide.sgml userguide.sgml; fi; \
-		openjade -d ../../../userguide.dsl -t sgml userguide.sgml; \
+		openjade -b utf-8 -w all -w no-empty -w no-unused-param \
+			 -d ../../../userguide.dsl -t sgml userguide.sgml; \
 		if test -h userguide.sgml; then rm userguide.sgml; fi; \
 ## 		and copy the stylesheet
 		cp $${SRCDOC}/userguide.css .; \

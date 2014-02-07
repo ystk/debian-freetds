@@ -6,7 +6,7 @@
 #include "common.h"
 #include <assert.h>
 
-static char software_version[] = "$Id: t0023.c,v 1.12 2007/12/04 02:06:38 jklowden Exp $";
+static char software_version[] = "$Id: t0023.c,v 1.16 2009/02/27 15:52:48 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 
@@ -18,7 +18,6 @@ main(int argc, char *argv[])
 {
 	LOGINREC *login;
 	DBPROCESS *dbproc;
-	char cmd[1024];
 	int i;
 	DBINT rowint;
 	DBCHAR rowchar[2];
@@ -31,7 +30,7 @@ main(int argc, char *argv[])
 	set_malloc_options();
 	read_login_info(argc, argv);
 
-	fprintf(stdout, "Start\n");
+	fprintf(stdout, "Starting %s\n", argv[0]);
 	add_bread_crumb();
 
 	/* Fortify_EnterScope(); */
@@ -60,7 +59,7 @@ main(int argc, char *argv[])
 	add_bread_crumb();
 
 	fprintf(stdout, "creating table\n");
-	dbcmd(dbproc, "create table #dblib0023 (col1 int not null,  col2 char(1) not null, col3 datetime not null)");
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	while (dbresults(dbproc) == SUCCEED) {
 		/* nop */
@@ -68,47 +67,34 @@ main(int argc, char *argv[])
 
 	fprintf(stdout, "insert\n");
 
-	strcpy(cmd, "insert into #dblib0023 values (1, 'A', 'Jan  1 2002 10:00:00AM')");
-	fprintf(stdout, "%s\n", cmd);
-	dbcmd(dbproc, cmd);
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	while (dbresults(dbproc) == SUCCEED) {
 		/* nop */
 	}
-	strcpy(cmd, "insert into #dblib0023 values (2, 'A', 'Jan  2 2002 10:00:00AM')");
-	fprintf(stdout, "%s\n", cmd);
-	dbcmd(dbproc, cmd);
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	while (dbresults(dbproc) == SUCCEED) {
 		/* nop */
 	}
-	strcpy(cmd, "insert into #dblib0023 values (3, 'A', 'Jan  3 2002 10:00:00AM')");
-	fprintf(stdout, "%s\n", cmd);
-	dbcmd(dbproc, cmd);
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	while (dbresults(dbproc) == SUCCEED) {
 		/* nop */
 	}
-	strcpy(cmd, "insert into #dblib0023 values (8, 'B', 'Jan  4 2002 10:00:00AM')");
-	fprintf(stdout, "%s\n", cmd);
-	dbcmd(dbproc, cmd);
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	while (dbresults(dbproc) == SUCCEED) {
 		/* nop */
 	}
-	strcpy(cmd, "insert into #dblib0023 values (9, 'B', 'Jan  5 2002 10:00:00AM')");
-	fprintf(stdout, "%s\n", cmd);
-	dbcmd(dbproc, cmd);
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	while (dbresults(dbproc) == SUCCEED) {
 		/* nop */
 	}
 
 	fprintf(stdout, "select\n");
-	strcpy(cmd, "select col1, col2, col3 from #dblib0023 order by col2 ");
-	strcat(cmd, "compute sum(col1) by col2 ");
-	strcat(cmd, "compute max(col3)");
-	dbcmd(dbproc, cmd);
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	add_bread_crumb();
 
@@ -241,7 +227,7 @@ main(int argc, char *argv[])
 	dbexit();
 	add_bread_crumb();
 
-	fprintf(stdout, "dblib %s on %s\n", (failed ? "failed!" : "okay"), __FILE__);
+	fprintf(stdout, "%s %s\n", __FILE__, (failed ? "failed!" : "OK"));
 	free_bread_crumb();
 	return failed ? 1 : 0;
 }

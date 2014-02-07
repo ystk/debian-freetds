@@ -1,157 +1,106 @@
 /* Tests 2 active statements */
 #include "common.h"
 
-static char software_version[] = "$Id: cursor3.c,v 1.3.2.1 2008/01/11 08:33:18 freddy77 Exp $";
+static char software_version[] = "$Id: cursor3.c,v 1.10 2010/07/05 09:20:32 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
-
-static SQLHDBC m_hdbc;
-
-#define CHECK_RCODE(t,h,m) \
-   if ( rcode != SQL_NO_DATA \
-     && rcode != SQL_SUCCESS \
-     && rcode != SQL_SUCCESS_WITH_INFO  \
-     && rcode != SQL_NEED_DATA ) { \
-      fprintf(stderr,"Error %d at: %s\n",rcode,m); \
-      getErrorInfo(t,h); \
-      exit(1); \
-   }
-
-static void
-getErrorInfo(SQLSMALLINT sqlhdltype, SQLHANDLE sqlhandle)
-{
-	SQLRETURN rcode = 0;
-	SQLCHAR sqlstate[SQL_SQLSTATE_SIZE + 1];
-	SQLINTEGER naterror = 0;
-	SQLCHAR msgtext[SQL_MAX_MESSAGE_LENGTH + 1];
-	SQLSMALLINT msgtextl = 0;
-
-	rcode = SQLGetDiagRec((SQLSMALLINT) sqlhdltype,
-			      (SQLHANDLE) sqlhandle,
-			      (SQLSMALLINT) 1,
-			      (SQLCHAR *) sqlstate,
-			      (SQLINTEGER *) & naterror,
-			      (SQLCHAR *) msgtext, (SQLSMALLINT) sizeof(msgtext), (SQLSMALLINT *) & msgtextl);
-	fprintf(stderr, "Diagnostic info:\n");
-	fprintf(stderr, "  SQL State: %s\n", (char *) sqlstate);
-	fprintf(stderr, "  SQL code : %d\n", (int) naterror);
-	fprintf(stderr, "  Message  : %s\n", (char *) msgtext);
-}
-
-static void
-exec_direct(int check, const char *stmt)
-{
-	SQLRETURN rcode;
-	SQLHSTMT stmth = 0;
-
-	rcode = SQLAllocHandle(SQL_HANDLE_STMT, (SQLHANDLE) m_hdbc, (SQLHANDLE *) & stmth);
-	CHECK_RCODE(SQL_HANDLE_STMT, stmth, "SQLAllocHandle");
-	rcode = SQLExecDirect(stmth, (SQLCHAR *) stmt, SQL_NTS);
-	if (check) {
-		CHECK_RCODE(SQL_HANDLE_STMT, stmth, "SQLExecDirect");
-	}
-	rcode = SQLFreeHandle(SQL_HANDLE_STMT, (SQLHANDLE) stmth);
-	CHECK_RCODE(SQL_HANDLE_STMT, stmth, "SQLFreeHandle");
-}
 
 int
 main(int argc, char **argv)
 {
-	SQLRETURN rcode;
-	SQLHSTMT m_hstmt1;
-	SQLHSTMT m_hstmt2;
+	SQLHSTMT stmt1 = SQL_NULL_HSTMT;
+	SQLHSTMT stmt2 = SQL_NULL_HSTMT;
+	SQLHSTMT old_odbc_stmt;
 	char buff[64];
 	SQLLEN ind;
 
-	use_odbc_version3 = 1;
-	Connect();
+	odbc_use_version3 = 1;
+	odbc_connect();
 
-	CheckCursor();
+	odbc_check_cursor();
 
-	m_hdbc = Connection;
+	odbc_command("CREATE TABLE #t1 ( k INT, c VARCHAR(20))");
+	odbc_command("INSERT INTO #t1 VALUES (1, 'aaa')");
+	odbc_command("INSERT INTO #t1 VALUES (2, 'bbbbb')");
+	odbc_command("INSERT INTO #t1 VALUES (3, 'ccccccccc')");
+	odbc_command("INSERT INTO #t1 VALUES (4, 'dd')");
 
-	exec_direct(1, "CREATE TABLE #t1 ( k INT, c VARCHAR(20))");
-	exec_direct(1, "INSERT INTO #t1 VALUES (1, 'aaa')");
-	exec_direct(1, "INSERT INTO #t1 VALUES (2, 'bbbbb')");
-	exec_direct(1, "INSERT INTO #t1 VALUES (3, 'ccccccccc')");
-	exec_direct(1, "INSERT INTO #t1 VALUES (4, 'dd')");
+	old_odbc_stmt = odbc_stmt;
 
-	m_hstmt1 = NULL;
-	rcode = SQLAllocHandle(SQL_HANDLE_STMT, m_hdbc, &m_hstmt1);
-	CHECK_RCODE(SQL_HANDLE_DBC, m_hdbc, "SQLAllocHandle 1");
+	CHKAllocHandle(SQL_HANDLE_STMT, odbc_conn, &stmt1, "S");
+	CHKAllocHandle(SQL_HANDLE_STMT, odbc_conn, &stmt2, "S");
 
-	m_hstmt2 = NULL;
-	rcode = SQLAllocHandle(SQL_HANDLE_STMT, m_hdbc, &m_hstmt2);
-	CHECK_RCODE(SQL_HANDLE_DBC, m_hdbc, "SQLAllocHandle 2");
 
-/*
-	rcode = SQLSetStmtAttr(m_hstmt1, SQL_ATTR_CURSOR_SCROLLABLE, (SQLPOINTER) SQL_NONSCROLLABLE, SQL_IS_UINTEGER);
-	CHECK_RCODE(SQL_HANDLE_STMT,m_hstmt1,"Set attribute SQL_ATTR_CURSOR_SCROLLABLE 1");
-*/
+	odbc_stmt = stmt1;
+/*	CHKSetStmtAttr(SQL_ATTR_CURSOR_SCROLLABLE, (SQLPOINTER) SQL_NONSCROLLABLE, SQL_IS_UINTEGER, "S"); */
+	CHKSetStmtAttr(SQL_ATTR_CURSOR_SENSITIVITY, (SQLPOINTER) SQL_SENSITIVE, SQL_IS_UINTEGER, "S");
+/*	CHKSetStmtAttr(SQL_ATTR_CONCURRENCY, (SQLPOINTER) SQL_CONCUR_LOCK, SQL_IS_UINTEGER, "S"); */
 
-	rcode = SQLSetStmtAttr(m_hstmt1, SQL_ATTR_CURSOR_SENSITIVITY, (SQLPOINTER) SQL_SENSITIVE, SQL_IS_UINTEGER);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt1, "Set attribute SQL_ATTR_CURSOR_SENSITIVITY 1");
 
-/*
-	rcode = SQLSetStmtAttr(m_hstmt2, SQL_ATTR_CURSOR_SCROLLABLE, (SQLPOINTER) SQL_NONSCROLLABLE, SQL_IS_UINTEGER);
-	CHECK_RCODE(SQL_HANDLE_STMT,m_hstmt2,"Set attribute SQL_ATTR_CURSOR_SCROLLABLE 2");
-*/
+	odbc_stmt = stmt2;
+/*	CHKSetStmtAttr(SQL_ATTR_CURSOR_SCROLLABLE, (SQLPOINTER) SQL_NONSCROLLABLE, SQL_IS_UINTEGER, "S"); */
+	CHKSetStmtAttr(SQL_ATTR_CURSOR_SENSITIVITY, (SQLPOINTER) SQL_SENSITIVE, SQL_IS_UINTEGER, "S");
+/*	CHKSetStmtAttr(SQL_ATTR_CONCURRENCY, (SQLPOINTER) SQL_CONCUR_LOCK, SQL_IS_UINTEGER, "S"); */
 
-	rcode = SQLSetStmtAttr(m_hstmt2, SQL_ATTR_CURSOR_SENSITIVITY, (SQLPOINTER) SQL_SENSITIVE, SQL_IS_UINTEGER);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt2, "Set attribute SQL_ATTR_CURSOR_SENSITIVITY 2");
+	odbc_stmt = stmt1;
+	CHKSetCursorName((SQLCHAR *) "c1", SQL_NTS, "S");
 
-/*
-	rcode = SQLSetStmtAttr(m_hstmt1, SQL_ATTR_CONCURRENCY, (SQLPOINTER) SQL_CONCUR_LOCK, SQL_IS_UINTEGER);
-	CHECK_RCODE(SQL_HANDLE_STMT,m_hstmt1,"Set attribute SQL_ATTR_CONCURRENCY 1");
+	odbc_stmt = stmt2;
+	CHKSetCursorName((SQLCHAR *) "c2", SQL_NTS, "S");
 
-	rcode = SQLSetStmtAttr(m_hstmt2, SQL_ATTR_CONCURRENCY, (SQLPOINTER) SQL_CONCUR_LOCK, SQL_IS_UINTEGER);
-	CHECK_RCODE(SQL_HANDLE_STMT,m_hstmt2,"Set attribute SQL_ATTR_CONCURRENCY 2");
-*/
+	odbc_stmt = stmt1;
+	CHKPrepare((SQLCHAR *) "SELECT * FROM #t1 ORDER BY k", SQL_NTS, "S");
 
-	rcode = SQLSetCursorName(m_hstmt1, (SQLCHAR *) "c1", SQL_NTS);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt1, "SetCursorName c1");
+	odbc_stmt = stmt2;
+	CHKPrepare((SQLCHAR *) "SELECT * FROM #t1 ORDER BY k DESC", SQL_NTS, "S");
 
-	rcode = SQLSetCursorName(m_hstmt2, (SQLCHAR *) "c2", SQL_NTS);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt2, "SetCursorName c2");
+	odbc_stmt = stmt1;
+	CHKExecute("S");
 
-	rcode = SQLPrepare(m_hstmt1, (SQLCHAR *) "SELECT * FROM #t1", SQL_NTS);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt1, "Prepare 1");
+	odbc_stmt = stmt2;
+	CHKExecute("S");
 
-	rcode = SQLPrepare(m_hstmt2, (SQLCHAR *) "SELECT * FROM #t1", SQL_NTS);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt2, "Prepare 2");
+	odbc_stmt = stmt1;
+	CHKFetch("S");
 
-	rcode = SQLExecute(m_hstmt1);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt1, "SQLExecute 1");
+	CHKGetData(2, SQL_C_CHAR, (SQLPOINTER) buff, sizeof(buff), &ind, "S");
+	printf(">> Fetch from 1: [%s]\n", buff);
 
-	rcode = SQLExecute(m_hstmt2);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt2, "SQLExecute 2");
+	odbc_stmt = stmt2;
+	CHKFetch("S");
 
-	rcode = SQLFetch(m_hstmt1);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt1, "SQLFetch 1");
+	CHKGetData(2, SQL_C_CHAR, (SQLPOINTER) buff, sizeof(buff), &ind, "S");
+	printf(">> Fetch from 2: [%s]\n", buff);
 
-	rcode = SQLGetData(m_hstmt1, 2, SQL_C_CHAR, (SQLPOINTER) buff, sizeof(buff), &ind);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt1, "SQLGetData 1");
-	fprintf(stdout, ">> Fetch from 1: [%s]\n", buff);
+	/*
+	 * this should check a problem with SQLGetData 
+	 * fetch a data on stmt2 than fetch on stmt1 and try to get data on first one
+	 */
+	CHKFetch("S");	/* "ccccccccc" */
+	odbc_stmt = stmt1;
+	CHKFetch("S");  /* "bbbbb" */
+	odbc_stmt = stmt2;
+	CHKGetData(2, SQL_C_CHAR, (SQLPOINTER) buff, sizeof(buff), &ind, "S");
+	printf(">> Fetch from 2: [%s]\n", buff);
+	if (strcmp(buff, "ccccccccc") != 0)
+		ODBC_REPORT_ERROR("Invalid results from SQLGetData");
+	odbc_stmt = stmt1;
+	CHKGetData(2, SQL_C_CHAR, (SQLPOINTER) buff, sizeof(buff), &ind, "S");
+	printf(">> Fetch from 1: [%s]\n", buff);
+	if (strcmp(buff, "bbbbb") != 0)
+		ODBC_REPORT_ERROR("Invalid results from SQLGetData");
 
-	rcode = SQLFetch(m_hstmt2);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt2, "SQLFetch 2");
+	odbc_stmt = stmt1;
+	CHKCloseCursor("SI");
+	odbc_stmt = stmt2;
+	CHKCloseCursor("SI");
 
-	rcode = SQLGetData(m_hstmt2, 2, SQL_C_CHAR, (SQLPOINTER) buff, sizeof(buff), &ind);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt2, "SQLGetData 2");
-	fprintf(stdout, ">> Fetch from 2: [%s]\n", buff);
+	odbc_stmt = stmt1;
+	CHKFreeHandle(SQL_HANDLE_STMT, (SQLHANDLE) stmt1, "S");
+	odbc_stmt = stmt2;
+	CHKFreeHandle(SQL_HANDLE_STMT, (SQLHANDLE) stmt2, "S");
 
-	rcode = SQLCloseCursor(m_hstmt1);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt1, "SQLCloseCursor 1");
-
-	rcode = SQLCloseCursor(m_hstmt2);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt2, "SQLCloseCursor 2");
-
-	rcode = SQLFreeHandle(SQL_HANDLE_STMT, (SQLHANDLE) m_hstmt1);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt1, "SQLFreeHandle 1");
-
-	rcode = SQLFreeHandle(SQL_HANDLE_STMT, (SQLHANDLE) m_hstmt2);
-	CHECK_RCODE(SQL_HANDLE_STMT, m_hstmt2, "SQLFreeHandle 2");
-
-	Disconnect();
+	odbc_stmt = old_odbc_stmt;
+	odbc_disconnect();
 
 	return 0;
 }

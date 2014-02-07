@@ -1,5 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004  Brian Bruns
+ * Copyright (C) 2010  Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -20,7 +21,7 @@
 #ifndef _tds_sysdep_private_h_
 #define _tds_sysdep_private_h_
 
-/* $Id: tds_sysdep_private.h,v 1.23.2.1 2008/03/11 08:27:35 freddy77 Exp $ */
+/* $Id: tds_sysdep_private.h,v 1.36 2010/12/28 14:37:10 freddy77 Exp $ */
 
 #undef TDS_RCSID
 #if defined(__GNUC__) && __GNUC__ >= 3
@@ -33,6 +34,12 @@
 #endif
 
 #define TDS_ADDITIONAL_SPACE 0
+
+#ifdef MSG_NOSIGNAL
+# define TDS_NOSIGNAL MSG_NOSIGNAL
+#else
+# define TDS_NOSIGNAL 0L
+#endif
 
 #ifdef __cplusplus
 extern "C"
@@ -47,10 +54,11 @@ extern "C"
 #endif				/* __INCvxWorksh */
 
 #if defined(DOS32X)
-#define READSOCKET(a,b,c)	recv((a), (b), (c), 0L)
-#define WRITESOCKET(a,b,c)	send((a), (b), (c), 0L)
+#define READSOCKET(a,b,c)	recv((a), (b), (c), TDS_NOSIGNAL)
+#define WRITESOCKET(a,b,c)	send((a), (b), (c), TDS_NOSIGNAL)
 #define CLOSESOCKET(a)		closesocket((a))
 #define IOCTLSOCKET(a,b,c)	ioctlsocket((a), (b), (char*)(c))
+#define SOCKLEN_T int
 #define select select_s
 typedef int pid_t;
 #define strcasecmp stricmp
@@ -60,21 +68,25 @@ typedef int pid_t;
 #define getpid() _gethostid()
 #endif	/* defined(DOS32X) */
 
-#if defined(WIN32) || defined(_WIN32) || defined(__WIN32__)
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(_WIN64)
+#include <winsock2.h>
 #include <windows.h>
-#define READSOCKET(a,b,c)	recv((a), (b), (c), 0L)
-#define WRITESOCKET(a,b,c)	send((a), (b), (c), 0L)
+#define READSOCKET(a,b,c)	recv((a), (char *) (b), (c), TDS_NOSIGNAL)
+#define WRITESOCKET(a,b,c)	send((a), (const char *) (b), (c), TDS_NOSIGNAL)
 #define CLOSESOCKET(a)		closesocket((a))
 #define IOCTLSOCKET(a,b,c)	ioctlsocket((a), (b), (c))
-int  _tds_socket_init(void);
-#define INITSOCKET()	_tds_socket_init()
-void _tds_socket_done(void);
-#define DONESOCKET()	_tds_socket_done()
+#define SOCKLEN_T int
+int  tds_socket_init(void);
+#define INITSOCKET()	tds_socket_init()
+void tds_socket_done(void);
+#define DONESOCKET()	tds_socket_done()
 #define NETDB_REENTRANT 1	/* BSD-style netdb interface is reentrant */
 
 #define TDSSOCK_EINTR WSAEINTR
 #define TDSSOCK_EINPROGRESS WSAEWOULDBLOCK
+#define TDSSOCK_WOULDBLOCK(e) ((e)==WSAEWOULDBLOCK)
 #define sock_errno WSAGetLastError()
+#define sock_strerror(n) tds_prwsaerror(n)
 #ifndef __MINGW32__
 typedef DWORD pid_t;
 #endif
@@ -82,6 +94,7 @@ typedef DWORD pid_t;
 #define strncasecmp strnicmp
 #define atoll _atoi64
 #define vsnprintf _vsnprintf
+#define snprintf _snprintf
 
 #ifndef WIN32
 #define WIN32 1
@@ -94,9 +107,11 @@ typedef DWORD pid_t;
 #define TDS_SDIR_SEPARATOR "\\"
 
 /* use macros to use new style names */
-#ifdef __MSVCRT__
+#if defined(__MSVCRT__) || defined(_MSC_VER)
 #define getpid()           _getpid()
 #define strdup(s)          _strdup(s)
+#undef fileno
+#define fileno(f)          _fileno(f)
 #define stricmp(s1,s2)     _stricmp(s1,s2)
 #define strnicmp(s1,s2,n)  _strnicmp(s1,s2,n)
 #endif
@@ -107,12 +122,24 @@ typedef DWORD pid_t;
 #define sock_errno errno
 #endif
 
+#ifndef sock_strerror
+#define sock_strerror(n) strerror(n)
+#endif
+
 #ifndef TDSSOCK_EINTR
 #define TDSSOCK_EINTR EINTR
 #endif
 
 #ifndef TDSSOCK_EINPROGRESS 
 #define TDSSOCK_EINPROGRESS EINPROGRESS
+#endif
+
+#ifndef TDSSOCK_WOULDBLOCK
+# if defined(EWOULDBLOCK) && EAGAIN != EWOULDBLOCK
+#  define TDSSOCK_WOULDBLOCK(e) ((e)==EAGAIN||(e)==EWOULDBLOCK)
+# else
+#  define TDSSOCK_WOULDBLOCK(e) ((e)==EAGAIN)
+# endif
 #endif
 
 #ifndef INITSOCKET
@@ -124,24 +151,97 @@ typedef DWORD pid_t;
 #endif /* !DONESOCKET */
 
 #ifndef READSOCKET
-#define READSOCKET(a,b,c)	read((a), (b), (c))
+# ifdef MSG_NOSIGNAL
+#  define READSOCKET(s,b,l)	recv((s), (b), (l), MSG_NOSIGNAL)
+# else
+#  define READSOCKET(s,b,l)	read((s), (b), (l))
+# endif
 #endif /* !READSOCKET */
 
 #ifndef WRITESOCKET
-#define WRITESOCKET(a,b,c)	write((a), (b), (c))
+# ifdef MSG_NOSIGNAL
+#  define WRITESOCKET(s,b,l)	send((s), (b), (l), MSG_NOSIGNAL)
+# else
+#  define WRITESOCKET(s,b,l)	write((s), (b), (l))
+# endif
 #endif /* !WRITESOCKET */
 
 #ifndef CLOSESOCKET
-#define CLOSESOCKET(a)		close((a))
+#define CLOSESOCKET(s)		close((s))
 #endif /* !CLOSESOCKET */
 
 #ifndef IOCTLSOCKET
-#define IOCTLSOCKET(a,b,c)	ioctl((a), (b), (c))
+#define IOCTLSOCKET(s,b,l)	ioctl((s), (b), (l))
 #endif /* !IOCTLSOCKET */
+
+#ifndef SOCKLEN_T
+# define SOCKLEN_T socklen_t
+#endif
+
+#if !defined(__WIN32__) && !defined(_WIN32) && !defined(WIN32)
+typedef int TDS_SYS_SOCKET;
+#define INVALID_SOCKET -1
+#define TDS_IS_SOCKET_INVALID(s) ((s) < 0)
+#else
+typedef SOCKET TDS_SYS_SOCKET;
+#define TDS_IS_SOCKET_INVALID(s) ((s) == INVALID_SOCKET)
+#endif
+
+#define tds_accept      accept
+#define tds_getpeername getpeername
+#define tds_getsockopt  getsockopt
+#define tds_getsockname getsockname
+#define tds_recvfrom    recvfrom
+
+#if defined(__hpux__) && SIZEOF_VOID_P == 8 && SIZEOF_INT == 4
+# if HAVE__XPG_ACCEPT
+#  undef tds_accept
+#  define tds_accept _xpg_accept
+# elif HAVE___ACCEPT
+#  undef tds_accept
+#  define tds_accept __accept
+# endif
+# if HAVE__XPG_GETPEERNAME
+#  undef tds_getpeername
+#  define tds_getpeername _xpg_getpeername
+# elif HAVE___GETPEERNAME
+#  undef tds_getpeername
+#  define tds_getpeername __getpeername
+# endif
+# if HAVE__XPG_GETSOCKOPT
+#  undef tds_getsockopt
+#  define tds_getsockopt _xpg_getsockopt
+# elif HAVE___GETSOCKOPT
+#  undef tds_getsockopt
+#  define tds_getsockopt __getsockopt
+# endif
+# if HAVE__XPG_GETSOCKNAME
+#  undef tds_getsockname
+#  define tds_getsockname _xpg_getsockname
+# elif HAVE___GETSOCKNAME
+#  undef tds_getsockname
+#  define tds_getsockname __getsockname
+# endif
+# if HAVE__XPG_RECVFROM
+#  undef tds_recvfrom
+#  define tds_recvfrom _xpg_recvfrom
+# elif HAVE___RECVFROM
+#  undef tds_recvfrom
+#  define tds_recvfrom __recvfrom
+# endif
+#endif
 
 #ifndef TDS_SDIR_SEPARATOR
 #define TDS_SDIR_SEPARATOR "/"
 #endif /* !TDS_SDIR_SEPARATOR */
+
+#ifdef HAVE_INTTYPES_H
+#include <inttypes.h>
+#endif
+
+#ifndef PRId64
+#define PRId64 TDS_I64_FORMAT
+#endif
 
 #ifdef __cplusplus
 #if 0

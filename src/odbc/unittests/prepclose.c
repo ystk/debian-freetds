@@ -26,7 +26,7 @@
  * prepare or execute a query. This should fail and return an error message.
  */
 
-static char software_version[] = "$Id: prepclose.c,v 1.3 2006/07/24 09:40:46 freddy77 Exp $";
+static char software_version[] = "$Id: prepclose.c,v 1.7 2010/07/05 09:20:33 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 #if HAVE_FSTAT && defined(S_IFSOCK)
@@ -65,10 +65,9 @@ static int
 Test(int direct)
 {
 	char buf[256];
-	SQLRETURN ret;
 	unsigned char sqlstate[6];
 
-	Connect();
+	odbc_connect();
 
 	if (!close_last_socket()) {
 		fprintf(stderr, "Error closing connection\n");
@@ -76,25 +75,20 @@ Test(int direct)
 	}
 
 	/* force disconnection closing socket */
-	if (direct)
-		ret = SQLExecDirect(Statement, (SQLCHAR *) "SELECT 1", SQL_NTS);
-	else
-		ret = SQLPrepare(Statement, (SQLCHAR *) "SELECT 1", SQL_NTS);
-	if (ret != SQL_ERROR) {
-		fprintf(stderr, "Error expected\n");
-		return 1;
+	if (direct) {
+		CHKExecDirect((SQLCHAR *) "SELECT 1", SQL_NTS, "E");
+	} else {
+		SQLSMALLINT cols;
+		/* use prepare, force dialog with server */
+		if (CHKPrepare((SQLCHAR *) "SELECT 1", SQL_NTS, "SE") == SQL_SUCCESS)
+			CHKNumResultCols(&cols, "E");
 	}
 
-	ret = SQLGetDiagRec(SQL_HANDLE_STMT, Statement, 1, sqlstate, NULL, (SQLCHAR *) buf, sizeof(buf), NULL);
-	if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
-		fprintf(stderr, "Error not set\n");
-		Disconnect();
-		return 1;
-	}
+	CHKGetDiagRec(SQL_HANDLE_STMT, odbc_stmt, 1, sqlstate, NULL, (SQLCHAR *) buf, sizeof(buf), NULL, "SI");
 	sqlstate[5] = 0;
 	printf("state=%s err=%s\n", (char*) sqlstate, buf);
 	
-	Disconnect();
+	odbc_disconnect();
 
 	printf("Done.\n");
 	return 0;

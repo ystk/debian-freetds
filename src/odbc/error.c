@@ -1,6 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998-1999  Brian Bruns
- * Copyright (C) 2003, 2004, 2005, 2006, 2007  Frediano Ziglio
+ * Copyright (C) 2003-2010  Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -36,18 +36,15 @@
 #include <assert.h>
 
 #include "tdsodbc.h"
+#include "odbcss.h"
 #include "tdsstring.h"
 #include "replacements.h"
-
-#if HAVE_ODBCSS_H
-#include <odbcss.h>
-#endif
 
 #ifdef DMALLOC
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: error.c,v 1.49 2007/10/16 15:12:21 freddy77 Exp $");
+TDS_RCSID(var, "$Id: error.c,v 1.66 2010/11/26 19:05:30 freddy77 Exp $");
 
 static void odbc_errs_pop(struct _sql_errors *errs);
 static const char *odbc_get_msg(const char *sqlstate);
@@ -250,60 +247,64 @@ rank_errors(struct _sql_errors *errs)
 	struct _sql_error swapbuf;
 	char istrans;
 
-	if (errs->ranked == 0 && errs->num_errors > 1) {
-		/* Find the highest of all unranked errors until there are none left */
-		for (settled = 0; settled < errs->num_errors; settled++) {
-			best = -1;
-			for (current = settled; current < errs->num_errors; current++) {
-				istrans = 0;
-				switch (errs->errs[current].native) {
-				case 1205:
-				case 1211:
-				case 2625:
-				case 3309:
-				case 7112:
-				case 266:
-				case 277:
-				case 611:
-				case 628:
-				case 3902:
-				case 3903:
-				case 3906:
-				case 3908:
-				case 6401:
+	/* already ranked or nothing to rank */
+	if (errs->ranked != 0 || errs->num_errors <= 1) {
+		errs->ranked = 1;
+		return;
+	}
+
+	/* Find the highest of all unranked errors until there are none left */
+	for (settled = 0; settled < errs->num_errors; settled++) {
+		best = -1;
+		for (current = settled; current < errs->num_errors; current++) {
+			istrans = 0;
+			switch (errs->errs[current].native) {
+			case 1205:
+			case 1211:
+			case 2625:
+			case 3309:
+			case 7112:
+			case 266:
+			case 277:
+			case 611:
+			case 628:
+			case 3902:
+			case 3903:
+			case 3906:
+			case 3908:
+			case 6401:
+				istrans = 1;
+				break;
+			}
+
+			if (istrans == 0) {
+				if (strcmp(errs->errs[current].state3,"25000") == 0)
 					istrans = 1;
-					break;
-				}
-
-				if (istrans == 0) {
-					if (strcmp(errs->errs[current].state3,"25000") == 0)
-						istrans = 1;
-					else if (strcmp(errs->errs[current].state3,"S1012") == 0)
-						istrans = 1;
-					else if (strcmp(errs->errs[current].state3,"08007") == 0)
-						istrans = 1;
-				}
-
-				/* Transaction errors are always best */
-				if (istrans == 1 && errs->errs[current].msgstate >= 10)	{
-					best = current;
-					break;
-				}
-
-				if (best == -1)
-					best = current;
-
-				/* Non-terminating comparisons only below this point */
-				if (errs->errs[current].msgstate > errs->errs[best].msgstate)
-					best = current;
+				else if (strcmp(errs->errs[current].state3,"S1012") == 0)
+					istrans = 1;
+				else if (strcmp(errs->errs[current].state3,"08007") == 0)
+					istrans = 1;
 			}
 
-			/* swap settled position with best */
-			if (best != settled) {
-				swapbuf = errs->errs[settled];
-				errs->errs[settled] = errs->errs[best];
-				errs->errs[best] = swapbuf;
+			/* Transaction errors are always best */
+			if (istrans == 1 && errs->errs[current].msgstate >= 10)	{
+				best = current;
+				break;
 			}
+
+			if (best == -1)
+				best = current;
+
+			/* Non-terminating comparisons only below this point */
+			if (errs->errs[current].msgstate > errs->errs[best].msgstate)
+				best = current;
+		}
+
+		/* swap settled position with best */
+		if (best != settled) {
+			swapbuf = errs->errs[settled];
+			errs->errs[settled] = errs->errs[best];
+			errs->errs[best] = swapbuf;
 		}
 	}
 	errs->ranked = 1;
@@ -383,10 +384,13 @@ void
 odbc_errs_add(struct _sql_errors *errs, const char *sqlstate, const char *msg)
 {
 	struct _sql_error *p;
-	int n = errs->num_errors;
+	int n;
 
 	assert(sqlstate);
+	if (!errs)
+		return;
 
+	n = errs->num_errors;
 	if (errs->errs)
 		p = (struct _sql_error *) realloc(errs->errs, sizeof(struct _sql_error) * (n + 1));
 	else
@@ -404,6 +408,8 @@ odbc_errs_add(struct _sql_errors *errs, const char *sqlstate, const char *msg)
 	errs->errs[n].server = strdup("DRIVER");
 	errs->errs[n].msg = msg ? strdup(msg) : odbc_get_msg(errs->errs[n].state3);
 	++errs->num_errors;
+
+	tdsdump_log(TDS_DBG_FUNC, "odbc_errs_add: \"%s\"\n", errs->errs[n].msg);
 }
 
 /* TODO check if TDS_UINT is correct for native error */
@@ -494,44 +500,48 @@ sqlstate2to3(char *state)
 	SQLS_MAP("S1T00", "HYT00");
 }
 
-static SQLRETURN
-_SQLGetDiagRec(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord, SQLCHAR FAR * szSqlState,
-	       SQLINTEGER FAR * pfNativeError, SQLCHAR * szErrorMsg, SQLSMALLINT cbErrorMsgMax, SQLSMALLINT FAR * pcbErrorMsg)
+#define FUNC NAME(SQLGetDiagRec) (P(SQLSMALLINT,handleType), P(SQLHANDLE,handle), P(SQLSMALLINT,numRecord), PCHAR(szSqlState),\
+	P(SQLINTEGER FAR *,pfNativeError), PCHAROUT(ErrorMsg,SQLSMALLINT) WIDE)
+#include "sqlwparams.h"
 {
 	SQLRETURN result;
-	struct _sql_errors *errs = NULL;
+	struct _sql_errors *errs;
 	const char *msg;
 	char *p;
+	TDS_DBC *dbc = NULL;
 
 	static const char msgprefix[] = "[FreeTDS][SQL Server]";
 
 	SQLINTEGER odbc_ver = SQL_OV_ODBC2;
 
-	tdsdump_log(TDS_DBG_FUNC, "_SQLGetDiagRec(%d, %p, %d, %p, %p, %p, %d, %p)\n", 
+	tdsdump_log(TDS_DBG_FUNC, "SQLGetDiagRec(%d, %p, %d, %p, %p, %p, %d, %p)\n",
 			handleType, handle, numRecord, szSqlState, pfNativeError, szErrorMsg, cbErrorMsgMax, pcbErrorMsg);
 
 	if (numRecord <= 0 || cbErrorMsgMax < 0)
 		return SQL_ERROR;
 
-	if (!handle)
+	if (!handle || ((TDS_CHK *) handle)->htype != handleType)
 		return SQL_INVALID_HANDLE;
 
+	errs = &((TDS_CHK *) handle)->errs;
 	switch (handleType) {
 	case SQL_HANDLE_STMT:
-		odbc_ver = ((TDS_STMT *) handle)->dbc->env->attr.odbc_version;
-		errs = &((TDS_STMT *) handle)->errs;
+		dbc = ((TDS_STMT *) handle)->dbc;
+		odbc_ver = dbc->env->attr.odbc_version;
 		break;
 
 	case SQL_HANDLE_DBC:
-		odbc_ver = ((TDS_DBC *) handle)->env->attr.odbc_version;
-		errs = &((TDS_DBC *) handle)->errs;
+		dbc = (TDS_DBC *) handle;
+		odbc_ver = dbc->env->attr.odbc_version;
 		break;
 
 	case SQL_HANDLE_ENV:
 		odbc_ver = ((TDS_ENV *) handle)->attr.odbc_version;
-		errs = &((TDS_ENV *) handle)->errs;
 		break;
-
+	case SQL_HANDLE_DESC:
+		dbc = desc_get_dbc((TDS_DESC *) handle);
+		odbc_ver = dbc->env->attr.odbc_version;
+		break;
 	default:
 		return SQL_INVALID_HANDLE;
 	}
@@ -543,17 +553,19 @@ _SQLGetDiagRec(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord, 
 	rank_errors(errs);
 
 	if (szSqlState) {
-		if (odbc_ver == SQL_OV_ODBC3)
-			strcpy((char *) szSqlState, errs->errs[numRecord].state3);
-		else
-			strcpy((char *) szSqlState, errs->errs[numRecord].state2);
+		const char *state =
+			(odbc_ver == SQL_OV_ODBC3) ? errs->errs[numRecord].state3 : errs->errs[numRecord].state2;
+		odbc_set_string(dbc, szSqlState, 24, (SQLSMALLINT *) NULL, state, -1);
 	}
 
 	msg = errs->errs[numRecord].msg;
 
 	if (asprintf(&p, "%s%s", msgprefix, msg) < 0)
 		return SQL_ERROR;
-	result = odbc_set_string(szErrorMsg, cbErrorMsgMax, pcbErrorMsg, p, -1);
+
+	tdsdump_log(TDS_DBG_FUNC, "SQLGetDiagRec: \"%s\"\n", p);
+
+	result = odbc_set_string(dbc, szErrorMsg, cbErrorMsgMax, pcbErrorMsg, p, -1);
 	free(p);
 
 	if (pfNativeError)
@@ -562,12 +574,11 @@ _SQLGetDiagRec(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord, 
 	return result;
 }
 
-SQLRETURN ODBC_API
-SQLError(SQLHENV henv, SQLHDBC hdbc, SQLHSTMT hstmt, SQLCHAR FAR * szSqlState, SQLINTEGER FAR * pfNativeError,
-	 SQLCHAR FAR * szErrorMsg, SQLSMALLINT cbErrorMsgMax, SQLSMALLINT FAR * pcbErrorMsg)
+#define FUNC NAME(SQLError) (P(SQLHENV,henv), P(SQLHDBC,hdbc), P(SQLHSTMT,hstmt), PCHAR(szSqlState), P(SQLINTEGER FAR *,pfNativeError),\
+	PCHAROUT(ErrorMsg,SQLSMALLINT) WIDE)
+#include "sqlwparams.h"
 {
 	SQLRETURN result;
-	struct _sql_errors *errs = NULL;
 	SQLSMALLINT type;
 	SQLHANDLE handle;
 
@@ -575,49 +586,33 @@ SQLError(SQLHENV henv, SQLHDBC hdbc, SQLHSTMT hstmt, SQLCHAR FAR * szSqlState, S
 			henv, hdbc, hstmt, szSqlState, pfNativeError, szErrorMsg, cbErrorMsgMax, pcbErrorMsg);
 
 	if (hstmt) {
-		errs = &((TDS_STMT *) hstmt)->errs;
 		handle = hstmt;
 		type = SQL_HANDLE_STMT;
 	} else if (hdbc) {
-		errs = &((TDS_DBC *) hdbc)->errs;
 		handle = hdbc;
 		type = SQL_HANDLE_DBC;
 	} else if (henv) {
-		errs = &((TDS_ENV *) henv)->errs;
 		handle = henv;
 		type = SQL_HANDLE_ENV;
 	} else
 		return SQL_INVALID_HANDLE;
 
-	rank_errors(errs);
-
-	result = _SQLGetDiagRec(type, handle, 1, szSqlState, pfNativeError, szErrorMsg, cbErrorMsgMax, pcbErrorMsg);
+	result = _SQLGetDiagRec(type, handle, 1, szSqlState, pfNativeError, szErrorMsg, cbErrorMsgMax, pcbErrorMsg _wide);
 
 	if (result == SQL_SUCCESS) {
 		/* remove first error */
-		odbc_errs_pop(errs);
+		odbc_errs_pop(&((TDS_CHK *) handle)->errs);
 	}
 
 	return result;
 }
 
-#if (ODBCVER >= 0x0300)
-SQLRETURN ODBC_API
-SQLGetDiagRec(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord, SQLCHAR FAR * szSqlState,
-	      SQLINTEGER FAR * pfNativeError, SQLCHAR * szErrorMsg, SQLSMALLINT cbErrorMsgMax, SQLSMALLINT FAR * pcbErrorMsg)
-{
-	tdsdump_log(TDS_DBG_FUNC, "SQLGetDiagRec(%d, %p, %d, %p, %p, %p, %d, %p)\n", 
-			handleType, handle, numRecord, szSqlState, pfNativeError, szErrorMsg, cbErrorMsgMax, pcbErrorMsg);
-	return _SQLGetDiagRec(handleType, handle, numRecord, szSqlState, pfNativeError, szErrorMsg, cbErrorMsgMax, pcbErrorMsg);
-}
-
-
-SQLRETURN ODBC_API
-SQLGetDiagField(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord, SQLSMALLINT diagIdentifier, SQLPOINTER buffer,
-		SQLSMALLINT cbBuffer, SQLSMALLINT FAR * pcbBuffer)
+#define FUNC NAME(SQLGetDiagField) (P(SQLSMALLINT,handleType), P(SQLHANDLE,handle), P(SQLSMALLINT,numRecord),\
+	P(SQLSMALLINT,diagIdentifier), P(SQLPOINTER,buffer), P(SQLSMALLINT,cbBuffer), P(SQLSMALLINT FAR *,pcbBuffer) WIDE)
+#include "sqlwparams.h"
 {
 	SQLRETURN result = SQL_SUCCESS;
-	struct _sql_errors *errs = NULL;
+	struct _sql_errors *errs;
 	const char *msg;
 
 	SQLINTEGER odbc_ver = SQL_OV_ODBC2;
@@ -633,7 +628,7 @@ SQLGetDiagField(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord,
 	if (cbBuffer < 0)
 		return SQL_ERROR;
 
-	if (!handle)
+	if (!handle  || ((TDS_CHK *) handle)->htype != handleType)
 		return SQL_INVALID_HANDLE;
 
 	switch (handleType) {
@@ -641,23 +636,26 @@ SQLGetDiagField(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord,
 		stmt = ((TDS_STMT *) handle);
 		dbc = stmt->dbc;
 		env = dbc->env;
-		errs = &stmt->errs;
 		break;
 
 	case SQL_HANDLE_DBC:
 		dbc = ((TDS_DBC *) handle);
 		env = dbc->env;
-		errs = &dbc->errs;
 		break;
 
 	case SQL_HANDLE_ENV:
 		env = ((TDS_ENV *) handle);
-		errs = &env->errs;
+		break;
+
+	case SQL_HANDLE_DESC:
+		dbc = desc_get_dbc((TDS_DESC *) handle);
+		env = dbc->env;
 		break;
 
 	default:
 		return SQL_INVALID_HANDLE;
 	}
+	errs = &((TDS_CHK *) handle)->errs;
 	odbc_ver = env->attr.odbc_version;
 
 	/* header (numRecord ignored) */
@@ -667,7 +665,7 @@ SQLGetDiagField(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord,
 			return SQL_ERROR;
 
 		/* TODO */
-		return odbc_set_string(buffer, cbBuffer, pcbBuffer, "", 0);
+		return odbc_set_string_oct(dbc, buffer, cbBuffer, pcbBuffer, "", 0);
 
 	case SQL_DIAG_DYNAMIC_FUNCTION_CODE:
 		*(SQLINTEGER *) buffer = 0;
@@ -711,32 +709,28 @@ SQLGetDiagField(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord,
 	case SQL_DIAG_CLASS_ORIGIN:
 	case SQL_DIAG_SUBCLASS_ORIGIN:
 		if (odbc_ver == SQL_OV_ODBC2)
-			result = odbc_set_string(buffer, cbBuffer, pcbBuffer, "ISO 9075", -1);
+			result = odbc_set_string_oct(dbc, buffer, cbBuffer, pcbBuffer, "ISO 9075", -1);
 		else
-			result = odbc_set_string(buffer, cbBuffer, pcbBuffer, "ODBC 3.0", -1);
+			result = odbc_set_string_oct(dbc, buffer, cbBuffer, pcbBuffer, "ODBC 3.0", -1);
 		break;
 
 	case SQL_DIAG_COLUMN_NUMBER:
 		*(SQLINTEGER *) buffer = SQL_COLUMN_NUMBER_UNKNOWN;
 		break;
 
-#ifdef SQL_DIAG_SS_MSGSTATE
 	case SQL_DIAG_SS_MSGSTATE:
 		if (errs->errs[numRecord].msgstate == 0)
 			return SQL_ERROR;
 		else
 			*(SQLINTEGER *) buffer = errs->errs[numRecord].msgstate;
 		break;
-#endif
 
-#ifdef SQL_DIAG_SS_LINE
 	case SQL_DIAG_SS_LINE:
 		if (errs->errs[numRecord].linenum == 0)
 			return SQL_ERROR;
 		else
 			*(SQLUSMALLINT *) buffer = errs->errs[numRecord].linenum;
 		break;
-#endif
 
 	case SQL_DIAG_CONNECTION_NAME:
 		if (dbc && dbc->tds_socket && dbc->tds_socket->spid > 0)
@@ -744,12 +738,12 @@ SQLGetDiagField(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord,
 		else
 			cplen = 0;
 
-		result = odbc_set_string(buffer, cbBuffer, pcbBuffer, tmp, cplen);
+		result = odbc_set_string_oct(dbc, buffer, cbBuffer, pcbBuffer, tmp, cplen);
 		break;
 
 	case SQL_DIAG_MESSAGE_TEXT:
 		msg = errs->errs[numRecord].msg;
-		result = odbc_set_string(buffer, cbBuffer, pcbBuffer, msg, -1);
+		result = odbc_set_string_oct(dbc, buffer, cbBuffer, pcbBuffer, msg, -1);
 		break;
 
 	case SQL_DIAG_NATIVE:
@@ -776,7 +770,7 @@ SQLGetDiagField(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord,
 			}
 			break;
 		}
-		result = odbc_set_string(buffer, cbBuffer, pcbBuffer, msg, -1);
+		result = odbc_set_string_oct(dbc, buffer, cbBuffer, pcbBuffer, msg, -1);
 		break;
 
 	case SQL_DIAG_SQLSTATE:
@@ -785,7 +779,7 @@ SQLGetDiagField(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord,
 		else
 			msg = errs->errs[numRecord].state2;
 
-		result = odbc_set_string(buffer, cbBuffer, pcbBuffer, msg, 5);
+		result = odbc_set_string_oct(dbc, buffer, cbBuffer, pcbBuffer, msg, 5);
 		break;
 
 	default:
@@ -793,4 +787,4 @@ SQLGetDiagField(SQLSMALLINT handleType, SQLHANDLE handle, SQLSMALLINT numRecord,
 	}
 	return result;
 }
-#endif
+

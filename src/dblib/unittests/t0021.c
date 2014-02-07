@@ -5,10 +5,10 @@
 
 #include "common.h"
 
-static char software_version[] = "$Id: t0021.c,v 1.12 2006/07/06 12:48:16 freddy77 Exp $";
+static char software_version[] = "$Id: t0021.c,v 1.15 2009/03/19 13:11:41 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
-
+#ifndef DBNTWIN32
 
 int failed = 0;
 
@@ -26,7 +26,7 @@ main(int argc, char **argv)
 
 	set_malloc_options();
 
-	fprintf(stdout, "Start\n");
+	fprintf(stdout, "Starting %s\n", argv[0]);
 
 	/* Fortify_EnterScope(); */
 	dbinit();
@@ -59,6 +59,13 @@ main(int argc, char **argv)
 
 	dbexit();
 
-	fprintf(stdout, "dblib %s on %s\n", (failed ? "failed!" : "okay"), __FILE__);
+	fprintf(stdout, "%s %s\n", __FILE__, (failed ? "failed!" : "OK"));
 	return failed ? 1 : 0;
 }
+#else
+int main(void)
+{
+	fprintf(stderr, "Not supported by MS DBLib\n");
+	return 0;
+}
+#endif

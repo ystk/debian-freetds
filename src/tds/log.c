@@ -1,6 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005  Brian Bruns
- * Copyright (C) 2006 Frediano Ziglio
+ * Copyright (C) 2006-2010  Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -54,8 +54,8 @@
 #include <unistd.h>
 #endif /* HAVE_UNISTD_H */
 
-#ifdef WIN32
-#include <process.h>
+#ifdef _WIN32
+# include <process.h>
 #endif
 
 #include "tds.h"
@@ -66,15 +66,15 @@
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: log.c,v 1.4 2007/11/12 22:17:28 jklowden Exp $");
+TDS_RCSID(var, "$Id: log.c,v 1.19 2010/04/10 14:29:36 freddy77 Exp $");
 
 /* for now all messages go to the log */
-int tds_debug_flags = TDS_DBGFLAG_ALLLVL | TDS_DBGFLAG_SOURCE;
+int tds_debug_flags = TDS_DBGFLAG_ALL | TDS_DBGFLAG_SOURCE;
 int tds_g_append_mode = 0;
 static char *g_dump_filename = NULL;
-static int write_dump = 0;	/* is TDS stream debug log turned on? */
+int tds_write_dump = 0;	/* is TDS stream debug log turned on? */
 static FILE *g_dumpfile = NULL;	/* file pointer for dump log          */
-static TDS_MUTEX_DECLARE(g_dump_mutex);
+static TDS_MUTEX_DEFINE(g_dump_mutex);
 
 static FILE* tdsdump_append(void);
 
@@ -93,7 +93,7 @@ void
 tdsdump_off(void)
 {
 	TDS_MUTEX_LOCK(&g_dump_mutex);
-	write_dump = 0;
+	tds_write_dump = 0;
 	TDS_MUTEX_UNLOCK(&g_dump_mutex);
 }				/* tdsdump_off()  */
 
@@ -105,13 +105,19 @@ void
 tdsdump_on(void)
 {
 	TDS_MUTEX_LOCK(&g_dump_mutex);
-	write_dump = 1;
+	tds_write_dump = 1;
 	TDS_MUTEX_UNLOCK(&g_dump_mutex);
-}				/* tdsdump_on()  */
+}
+
+int
+tdsdump_isopen()
+{
+	return NULL != g_dumpfile;
+}
 
 
 /**
- * This creates and truncates a human readable dump file for the TDS
+ * Create and truncate a human readable dump file for the TDS
  * traffic.  The name of the file is specified by the filename
  * parameter.  If that is given as NULL or an empty string,
  * any existing log file will be closed.
@@ -148,7 +154,7 @@ tdsdump_open(const char *filename)
 	if (tds_g_append_mode) {
 		g_dump_filename = strdup(filename);
 		/* if mutex are available do not reopen file every time */
-#ifdef TDS_HAVE_PTHREAD_MUTEX
+#ifdef TDS_HAVE_MUTEX
 		g_dumpfile = tdsdump_append();
 #endif
 	} else if (!strcmp(filename, "stdout")) {
@@ -160,7 +166,7 @@ tdsdump_open(const char *filename)
 	}
 
 	if (result)
-		write_dump = 1;
+		tds_write_dump = 1;
 	TDS_MUTEX_UNLOCK(&g_dump_mutex);
 
 	if (result) {
@@ -215,7 +221,7 @@ void
 tdsdump_close(void)
 {
 	TDS_MUTEX_LOCK(&g_dump_mutex);
-	write_dump = 0;
+	tds_write_dump = 0;
 	if (g_dumpfile != NULL && g_dumpfile != stdout && g_dumpfile != stderr)
 		fclose(g_dumpfile);
 	g_dumpfile = NULL;
@@ -271,10 +277,9 @@ tdsdump_start(FILE *file, const char *fname, int line)
  * \param length   number of bytes in the buffer
  */
 void
-tdsdump_dump_buf(const char* file, unsigned int level_line, const char *msg, const void *buf, int length)
+tdsdump_dump_buf(const char* file, unsigned int level_line, const char *msg, const void *buf, size_t length)
 {
-	int i;
-	int j;
+	size_t i, j;
 #define BYTES_PER_LINE 16
 	const unsigned char *data = (const unsigned char *) buf;
 	const int debug_lvl = level_line & 15;
@@ -282,7 +287,7 @@ tdsdump_dump_buf(const char* file, unsigned int level_line, const char *msg, con
 	char line_buf[BYTES_PER_LINE * 8 + 16], *p;
 	FILE *dumpfile;
 
-	if (((tds_debug_flags >> debug_lvl) & 1) == 0 || !write_dump)
+	if (((tds_debug_flags >> debug_lvl) & 1) == 0 || !tds_write_dump)
 		return;
 
 	if (!g_dumpfile && !g_dump_filename)
@@ -291,7 +296,7 @@ tdsdump_dump_buf(const char* file, unsigned int level_line, const char *msg, con
 	TDS_MUTEX_LOCK(&g_dump_mutex);
 
 	dumpfile = g_dumpfile;
-#ifdef TDS_HAVE_PTHREAD_MUTEX
+#ifdef TDS_HAVE_MUTEX
 	if (tds_g_append_mode && dumpfile == NULL)
 		dumpfile = g_dumpfile = tdsdump_append();
 #else
@@ -313,7 +318,7 @@ tdsdump_dump_buf(const char* file, unsigned int level_line, const char *msg, con
 		/*
 		 * print the offset as a 4 digit hex number
 		 */
-		p += sprintf(p, "%04x", i);
+		p += sprintf(p, "%04x", ((unsigned int) i) & 0xffffu);
 
 		/*
 		 * print each byte in hex
@@ -349,7 +354,7 @@ tdsdump_dump_buf(const char* file, unsigned int level_line, const char *msg, con
 
 	fflush(dumpfile);
 
-#ifndef TDS_HAVE_PTHREAD_MUTEX
+#ifndef TDS_HAVE_MUTEX
 	if (tds_g_append_mode) {
 		if (dumpfile != stdout && dumpfile != stderr)
 			fclose(dumpfile);
@@ -361,8 +366,9 @@ tdsdump_dump_buf(const char* file, unsigned int level_line, const char *msg, con
 }				/* tdsdump_dump_buf()  */
 
 
+#undef tdsdump_log
 /**
- * This function write a message to the debug log.  
+ * Write a message to the debug log.  
  * \param file name of the log file
  * \param level_line kind of detail to be included
  * \param fmt       printf-like format string
@@ -375,7 +381,7 @@ tdsdump_log(const char* file, unsigned int level_line, const char *fmt, ...)
 	va_list ap;
 	FILE *dumpfile;
 
-	if (((tds_debug_flags >> debug_lvl) & 1) == 0 || !write_dump)
+	if (((tds_debug_flags >> debug_lvl) & 1) == 0 || !tds_write_dump)
 		return;
 
 	if (!g_dumpfile && !g_dump_filename)
@@ -384,7 +390,7 @@ tdsdump_log(const char* file, unsigned int level_line, const char *fmt, ...)
 	TDS_MUTEX_LOCK(&g_dump_mutex);
 
 	dumpfile = g_dumpfile;
-#ifdef TDS_HAVE_PTHREAD_MUTEX
+#ifdef TDS_HAVE_MUTEX
 	if (tds_g_append_mode && dumpfile == NULL)
 		dumpfile = g_dumpfile = tdsdump_append();
 #else
@@ -406,7 +412,7 @@ tdsdump_log(const char* file, unsigned int level_line, const char *fmt, ...)
 
 	fflush(dumpfile);
 
-#ifndef TDS_HAVE_PTHREAD_MUTEX
+#ifndef TDS_HAVE_MUTEX
 	if (tds_g_append_mode) {
 		if (dumpfile != stdout && dumpfile != stderr)
 			fclose(dumpfile);
@@ -414,4 +420,86 @@ tdsdump_log(const char* file, unsigned int level_line, const char *fmt, ...)
 #endif
 	TDS_MUTEX_UNLOCK(&g_dump_mutex);
 }				/* tdsdump_log()  */
+#define tdsdump_log if (TDS_UNLIKELY(tds_write_dump)) tdsdump_log
 
+
+/**
+ * Write a column value to the debug log.  
+ * \param file name of the log file
+ * \param col column to dump
+ */
+void
+tdsdump_col(const TDSCOLUMN *col)
+{
+	const char* typename;
+	char* data;
+	TDS_SMALLINT type;
+	
+	assert(col);
+	assert(col->column_data);
+	
+	typename = tds_prtype(col->column_type);
+	type = col->column_type;
+	
+	switch(type) {
+	case SYBINTN:
+		switch(col->column_cur_size) {
+		case sizeof(TDS_INT):
+			type = SYBINT4;
+			break;
+		case sizeof(TDS_SMALLINT):
+			type = SYBINT2;
+			break;
+		case sizeof(TDS_TINYINT):
+			type = SYBINT1;
+			break;
+		}
+		break;
+	case SYBFLTN:
+		switch(col->column_cur_size) {
+		case sizeof(TDS_REAL):
+			type = SYBREAL;
+			break;
+		case sizeof(TDS_FLOAT):
+			type = SYBFLT8;
+			break;
+		}
+		break;
+	}
+	
+	switch(type) {
+	case SYBCHAR: 
+	case SYBVARCHAR:
+		if (col->column_cur_size >= 0) {
+			data = calloc(1, 1 + col->column_cur_size);
+			if (!data) {
+				tdsdump_log(TDS_DBG_FUNC, "no memory to log data for type %s\n", typename);
+				return;
+			}
+			memcpy(data, col->column_data, col->column_cur_size);
+			tdsdump_log(TDS_DBG_FUNC, "type %s has value \"%s\"\n", typename, data);
+			free(data);
+		} else {
+			tdsdump_log(TDS_DBG_FUNC, "type %s has value NULL\n", typename);
+		}
+		break;
+	case SYBINT1: 
+		tdsdump_log(TDS_DBG_FUNC, "type %s has value %d\n", typename, (int)*(TDS_TINYINT*)col->column_data); 
+		break;
+	case SYBINT2: 
+		tdsdump_log(TDS_DBG_FUNC, "type %s has value %d\n", typename, (int)*(TDS_SMALLINT*)col->column_data); 
+		break;
+	case SYBINT4: 
+		tdsdump_log(TDS_DBG_FUNC, "type %s has value %d\n", typename, (int)*(TDS_INT*)col->column_data); 
+		break;
+	case SYBREAL: 
+		tdsdump_log(TDS_DBG_FUNC, "type %s has value %f\n", typename, (double)*(TDS_REAL*)col->column_data); 
+		break;
+	case SYBFLT8: 
+		tdsdump_log(TDS_DBG_FUNC, "type %s has value %f\n", typename, (double)*(TDS_FLOAT*)col->column_data); 
+		break;
+	default:
+		tdsdump_log(TDS_DBG_FUNC, "cannot log data for type %s\n", typename);
+		break;
+	}
+}

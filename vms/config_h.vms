@@ -1,6 +1,6 @@
-/* $Id: config_h.vms,v 1.7 2007/08/11 06:52:06 freddy77 Exp $ */
+/* $Id: config_h.vms,v 1.12 2010/09/02 18:01:42 berryc Exp $ */
 
-/* include/config.h.in.  Generated from configure.in by autoheader.  */
+/* include/config.h.in.  Generated from configure.ac by autoheader.  */
 /* and edited by hand for VMS */
 
 #ifndef CONFIG_H_LOADED
@@ -17,6 +17,9 @@
 
 /* Define to 1 if you have the <arpa/inet.h> header file. */
 #define HAVE_ARPA_INET_H 1
+
+/* Define to 1 if you have the `alarm' function. */
+#define HAVE_ALARM 1
 
 /* Define to 1 if you have the `asprintf' function. */
 #define HAVE_ASPRINTF @D_ASPRINTF@
@@ -145,6 +148,16 @@
 
 /* Define to 1 if you have the <paths.h> header file. */
 #undef HAVE_PATHS_H
+
+#if __CRTL_VER >= 70302000 && !defined(__VAX)
+
+/* Define to 1 if you have the `poll' function. */
+#define HAVE_POLL 1
+
+/* Define to 1 if you have the <poll.h> header file. */
+#define HAVE_POLL_H 1
+
+#endif
 
 /* Define to 1 if you have the GNU Readline library. */
 #define HAVE_READLINE 1
@@ -276,8 +289,6 @@
 
 /* Additions below not originally from config.h.in */
 
-#define _FREETDS_LIBRARY_SOURCE
-
 /* This really just needs to be the current working directory for the tests */
 #define FREETDS_SRCDIR "."
 
@@ -339,7 +350,13 @@ char * readpassphrase(const char *, char *, size_t, int);
     typedef __size_t socklen_t;
 #endif
 
-/* We only support unixODBC, so we do have this */
+/* We only support unixODBC, so we do have these */
 #define HAVE_SQLGETPRIVATEPROFILESTRING 1
+#define HAVE_SQLLEN 1
+#define HAVE_SQLSETPOSIROW 1
+#define TDS_SQLCOLATTRIBUTE_SQLLEN 1
+
+/* Prototype for routine to convert VMS-style arguments to Unix-style. */
+int parse_vms_args(int *argc, char **argv[]);
 
 #endif /* CONFIG_H_LOADED */

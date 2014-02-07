@@ -22,6 +22,6 @@
 
 /* $Id: tdsver.h.in,v 1.6 2006/04/12 13:54:10 freddy77 Exp $ */
 
-#define TDS_VERSION_NO "freetds v0.82"
+#define TDS_VERSION_NO "freetds v0.91"
 
 #endif

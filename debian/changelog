@@ -1,3 +1,56 @@
+freetds (0.91-2+deb7u1) wheezy; urgency=low
+
+  * Non-maintainer upload.
+  * Make libiodbc Breaks versioned now that it can load multiarch drivers.
+
+ -- Julien Cristau <julien.cristau@logilab.fr>  Wed, 10 Jul 2013 15:03:51 +0200
+
+freetds (0.91-2) unstable; urgency=low
+
+  * Don't both breaks and recommends libiodbc2, this confuses apt.
+    Closes: #645726.
+
+ -- Steve Langasek <vorlon@debian.org>  Fri, 12 Oct 2012 15:14:28 +0000
+
+freetds (0.91-1) unstable; urgency=low
+
+  * New upstream release.  Closes: #852069, LP: #887374.
+    - Built with new libtool, so should be compatible with binutils-gold.
+      Closes: #558548.
+    - Includes fix for upstream corruption seen with Hebrew strings.
+      Closes: #500451.
+    - drop patch to src/tds/locale.c; upstream seems to now support fairly
+      complete autodetection of the client locale.
+    - update symbols files for two new symbols.
+  * Pass -DDBLIB_UNIMPLEMENTED=1 so we get a full set of symbols in
+    libsybdb, even if some functions are not yet implemented.
+  * Switch to using dpkg-buildflags for hardening.
+  * src/apps/bsqldb.c: fix a build failure with -Werror=format-security.
+  * Build-depend on libgnutls-dev for TLS support.  LP: #406468.
+  * Build-depend on libreadline-dev, which makes freetds-bin a bit more
+    useful.
+
+ -- Steve Langasek <vorlon@debian.org>  Mon, 14 Nov 2011 21:20:25 -0800
+
+freetds (0.82-8) unstable; urgency=low
+
+  * Move freetds-bin to section database.  Closes: #609788.
+  * Point Vcs-Bzr, Vcs-Browser at alioth.
+  * Install to /usr/lib/$(DEB_HOST_MULTIARCH)/odbc, use a relative path in
+    odbcinst.ini, and mark the packages as ready for multiarch.
+  * Drop debian/*.dirs, dating back to when I didn't know how multiarch
+    worked
+  * Drop the unneeded .la files from freetds-dev.
+  * Mark tdsodbc.config set -e - thanks, lintian
+  * Add ${misc:Depends} for debhelper.
+  * Bump Standards-Version to 3.9.2 (no changes required).
+  * Don't ship a broken link to our odbcinst.ini in
+    /usr/share/doc/freetds-common/examples.
+  * Add Danish debconf translation, thanks to Joe Dalton
+    <joedalton2@yahoo.dk>.  Closes: #621362.
+
+ -- Steve Langasek <vorlon@debian.org>  Sat, 20 Aug 2011 21:09:01 -0700
+
 freetds (0.82-7) unstable; urgency=low
 
   * Bump debhelper compat to 7.

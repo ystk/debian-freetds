@@ -1,6 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005  Brian Bruns
- * Copyright (C) 2005 Frediano Ziglio
+ * Copyright (C) 2005-2010 Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -22,13 +22,7 @@
 #include <config.h>
 #endif /* HAVE_CONFIG_H */
 
-#if HAVE_STDLIB_H
 #include <stdlib.h>
-#endif /* HAVE_STDLIB_H */
-
-#if HAVE_STRING_H
-#include <string.h>
-#endif /* HAVE_STRING_H */
 
 #if HAVE_UNISTD_H
 #include <unistd.h>
@@ -43,11 +37,23 @@
 #include "replacements.h"
 #include "enum_cap.h"
 
+#ifdef STRING_H
+#include <string.h>
+#endif
+
+#ifdef HAVE_LOCALE_H
+#include <locale.h>
+#endif /* HAVE_LOCALE_H */
+
+#ifdef HAVE_LANGINFO_H
+#include <langinfo.h>
+#endif /* HAVE_LANGINFO_H */
+
 #ifdef DMALLOC
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: mem.c,v 1.175 2007/12/31 10:06:50 freddy77 Exp $");
+TDS_RCSID(var, "$Id: mem.c,v 1.208.2.1 2011/08/12 16:29:36 freddy77 Exp $");
 
 static void tds_free_env(TDSSOCKET * tds);
 static void tds_free_compute_results(TDSSOCKET * tds);
@@ -81,6 +87,42 @@ static void tds_free_compute_result(TDSCOMPUTEINFO * comp_info);
  * @{
  */
 
+static volatile int inc_num = 1;
+
+/**
+ * Get an id for dynamic query based on TDS information
+ * \param tds state information for the socket and the TDS protocol
+ * \return TDS_FAIL or TDS_SUCCEED
+ */
+static char *
+tds_get_dynid(TDSSOCKET * tds, char *id)
+{
+	unsigned long n;
+	int i;
+	char *p;
+	char c;
+
+	CHECK_TDS_EXTRA(tds);
+
+	inc_num = (inc_num + 1) & 0xffff;
+	/* some version of Sybase require length <= 10, so we code id */
+	n = (unsigned long) (TDS_INTPTR) tds;
+	p = id;
+	*p++ = (char) ('a' + (n % 26u));
+	n /= 26u;
+	for (i = 0; i < 9; ++i) {
+		c = (char) ('0' + (n % 36u));
+		*p++ = (c < ('0' + 10)) ? c : c + ('a' - '0' - 10);
+		/* printf("%d -> %d(%c)\n",n%36u,p[-1],p[-1]); */
+		n /= 36u;
+		if (i == 4)
+			n += 3u * inc_num;
+	}
+	*p++ = 0;
+	return id;
+}
+
+
 /**
  * \fn TDSDYNAMIC *tds_alloc_dynamic(TDSSOCKET *tds, const char *id)
  * \brief Allocate a dynamic statement.
@@ -93,14 +135,24 @@ static void tds_free_compute_result(TDSCOMPUTEINFO * comp_info);
 TDSDYNAMIC *
 tds_alloc_dynamic(TDSSOCKET * tds, const char *id)
 {
-	TDSDYNAMIC *dyn, *curr;
+	TDSDYNAMIC *dyn;
+	char tmp_id[30];
 
-	/* check to see if id already exists (shouldn't) */
-	for (curr = tds->dyns; curr != NULL; curr = curr->next)
-		if (!strcmp(curr->id, id)) {
-			/* id already exists! just return it */
-			return curr;
+	if (id) {
+		/* check to see if id already exists (shouldn't) */
+		if (tds_lookup_dynamic(tds, id))
+			return NULL;
+	} else {
+		unsigned int n;
+		id = tmp_id;
+
+		for (n = 0;;) {
+			if (!tds_lookup_dynamic(tds, tds_get_dynid(tds, tmp_id)))
+				break;
+			if (++n == 256)
+				return NULL;
 		}
+	}
 
 	dyn = (TDSDYNAMIC *) calloc(1, sizeof(TDSDYNAMIC));
 	if (!dyn)
@@ -246,12 +298,12 @@ tds_free_param_result(TDSPARAMINFO * param_info)
 }
 
 static void
-_tds_param_free(TDSCOLUMN *col)
+tds_param_free(TDSCOLUMN *col)
 {
 	if (!col->column_data)
 		return;
 
-	if (is_blob_type(col->column_type)) {
+	if (is_blob_col(col)) {
 		TDSBLOB *blob = (TDSBLOB *) col->column_data;
 		free(blob->textvalue);
 	}
@@ -273,7 +325,7 @@ tds_alloc_param_data(TDSCOLUMN * curparam)
 
 	if (is_numeric_type(curparam->column_type)) {
 		data_size = sizeof(TDS_NUMERIC);
-	} else if (is_blob_type(curparam->column_type)) {
+	} else if (is_blob_col(curparam)) {
 		data_size = sizeof(TDSBLOB);
 	} else {
 		data_size = curparam->column_size;
@@ -283,14 +335,14 @@ tds_alloc_param_data(TDSCOLUMN * curparam)
 	/* allocate data */
 	if (curparam->column_data && curparam->column_data_free)
 		curparam->column_data_free(curparam);
-	curparam->column_data_free = _tds_param_free;
+	curparam->column_data_free = tds_param_free;
 
 	data = malloc(data_size);
 	curparam->column_data = data;
 	if (!data)
 		return NULL;
 	/* if is a blob reset buffer */
-	if (is_blob_type(curparam->column_type))
+	if (is_blob_col(curparam))
 		memset(data, 0, sizeof(TDSBLOB));
 
 	return data;
@@ -387,7 +439,7 @@ tds_alloc_results(int num_cols)
 }
 
 static void
-_tds_row_free(TDSRESULTINFO *res_info, unsigned char *row)
+tds_row_free(TDSRESULTINFO *res_info, unsigned char *row)
 {
 	int i;
 	const TDSCOLUMN *col;
@@ -398,7 +450,7 @@ _tds_row_free(TDSRESULTINFO *res_info, unsigned char *row)
 	for (i = 0; i < res_info->num_cols; ++i) {
 		col = res_info->columns[i];
 		
-		if (is_blob_type(col->column_type)) {
+		if (is_blob_col(col)) {
 			TDSBLOB *blob = (TDSBLOB *) &row[col->column_data - res_info->current_row];
 			if (blob->textvalue)
 				TDS_ZERO_FREE(blob->textvalue);
@@ -429,7 +481,7 @@ tds_alloc_row(TDSRESULTINFO * res_info)
 
 		if (is_numeric_type(col->column_type)) {
 			row_size += sizeof(TDS_NUMERIC);
-		} else if (is_blob_type(col->column_type)) {
+		} else if (is_blob_col(col)) {
 			row_size += sizeof(TDSBLOB);
 		} else {
 			row_size += col->column_size;
@@ -443,7 +495,7 @@ tds_alloc_row(TDSRESULTINFO * res_info)
 	res_info->current_row = ptr;
 	if (!ptr)
 		return TDS_FAIL;
-	res_info->row_free = _tds_row_free;
+	res_info->row_free = tds_row_free;
 
 	/* fill column_data */
 	row_size = 0;
@@ -454,7 +506,7 @@ tds_alloc_row(TDSRESULTINFO * res_info)
 
 		if (is_numeric_type(col->column_type)) {
 			row_size += sizeof(TDS_NUMERIC);
-		} else if (is_blob_type(col->column_type)) {
+		} else if (is_blob_col(col)) {
 			row_size += sizeof(TDSBLOB);
 		} else {
 			row_size += col->column_size;
@@ -573,6 +625,34 @@ tds_free_all_results(TDSSOCKET * tds)
 	tds->has_status = 0;
 	tds->ret_status = 0;
 }
+/*
+ * Return 1 if winsock is initialized, else 0.
+ */
+static int
+winsock_initialized(void)
+{
+#if defined(_WIN32) || defined(_WIN64)
+	WSADATA wsa_data;
+	int erc;
+	WSAPROTOCOL_INFO protocols[64];
+	DWORD how_much = sizeof(protocols);
+	WORD requested_version = MAKEWORD(2, 2);
+	 
+	if (SOCKET_ERROR != WSAEnumProtocols(NULL, protocols, &how_much)) 
+		return 1;
+
+	if (WSANOTINITIALISED != (erc = WSAGetLastError())) {
+		fprintf(stderr, "tds_init_winsock: WSAEnumProtocols failed with %d (%s)\n", erc, tds_prwsaerror(erc) ); 
+		return 0;
+	}
+	
+	if (SOCKET_ERROR == (erc = WSAStartup(requested_version, &wsa_data))) {
+		fprintf(stderr, "tds_init_winsock: WSAStartup failed with %d (%s)\n", erc, tds_prwsaerror(erc) ); 
+		return 0;
+	}
+#endif
+	return 1;
+}
 
 TDSCONTEXT *
 tds_alloc_context(void * parent)
@@ -580,12 +660,13 @@ tds_alloc_context(void * parent)
 	TDSCONTEXT *context;
 	TDSLOCALE *locale;
 
-	locale = tds_get_locale();
-	if (!locale)
+	if (!winsock_initialized())
 		return NULL;
 
-	context = (TDSCONTEXT *) calloc(1, sizeof(TDSCONTEXT));
-	if (!context) {
+	if ((locale = tds_get_locale()) == NULL)
+		return NULL;
+
+	if ((context = calloc(1, sizeof(TDSCONTEXT))) == NULL) {
 		tds_free_locale(locale);
 		return NULL;
 	}
@@ -611,9 +692,11 @@ tds_alloc_locale(void)
 	TDSLOCALE *locale;
 
 	TEST_MALLOC(locale, TDSLOCALE);
+
 	return locale;
 
       Cleanup:
+	tds_free_locale(locale);
 	return NULL;
 }
 static const unsigned char defaultcaps[] = { 
@@ -723,6 +806,11 @@ tds_alloc_connection(TDSLOCALE * locale)
 {
 	TDSCONNECTION *connection;
 	char hostname[128];
+#if HAVE_NL_LANGINFO && defined(CODESET)
+	char *charset;
+#else
+	char *lc_all, *tok = NULL;
+#endif
 
 	TEST_MALLOC(connection, TDSCONNECTION);
 	tds_dstr_init(&connection->server_name);
@@ -739,26 +827,59 @@ tds_alloc_connection(TDSLOCALE * locale)
 	tds_dstr_init(&connection->dump_file);
 	tds_dstr_init(&connection->client_charset);
 	tds_dstr_init(&connection->instance_name);
+	tds_dstr_init(&connection->server_realm_name);
 
 	/* fill in all hardcoded defaults */
 	if (!tds_dstr_copy(&connection->server_name, TDS_DEF_SERVER))
 		goto Cleanup;
-	connection->major_version = TDS_DEF_MAJOR;
-	connection->minor_version = TDS_DEF_MINOR;
-	connection->port = TDS_DEF_PORT;
+	/*
+	 * TDS 7.0:
+	 * 0x02 indicates ODBC driver
+	 * 0x01 means change to initial language must succeed
+	 */
+	connection->option_flag2 = 0x03;
+	connection->tds_version = TDS_DEFAULT_VERSION;
 	connection->block_size = 0;
-	/* TODO use system default ?? */
+
+#if HAVE_NL_LANGINFO && defined(CODESET)
+	charset = nl_langinfo(CODESET);
+	if (strcmp(tds_canonical_charset_name(charset), "US-ASCII") == 0)
+		charset = "ISO-8859-1";
+	if (!tds_dstr_copy(&connection->client_charset, charset))
+		goto Cleanup;;
+#else
 	if (!tds_dstr_copy(&connection->client_charset, "ISO-8859-1"))
 		goto Cleanup;
+
+	if ((lc_all = strdup(setlocale(LC_ALL, NULL))) == NULL)
+		goto Cleanup;
+
+	if (strtok_r(lc_all, ".", &tok)) {
+		char *encoding = strtok_r(NULL, "@", &tok);
+#ifdef _WIN32
+		/* windows give numeric codepage*/
+		if (encoding && atoi(encoding) > 0) {
+			char *p;
+			if (asprintf(&p, "CP%s", encoding) >= 0) {
+				free(lc_all);
+				lc_all = encoding = p;
+			}
+		}
+#endif
+		if (encoding) {
+			if (!tds_dstr_copy(&connection->client_charset, encoding))
+				goto Cleanup;
+		}
+	}
+	free(lc_all);
+#endif
+
 	if (locale) {
 		if (locale->language)
 			if (!tds_dstr_copy(&connection->language, locale->language))
 				goto Cleanup;
 		if (locale->server_charset)
 			if (!tds_dstr_copy(&connection->server_charset, locale->server_charset))
-				goto Cleanup;
-		if (locale->client_charset)
-			if (!tds_dstr_copy(&connection->client_charset,locale->client_charset))
 				goto Cleanup;
 	}
 	if (tds_dstr_isempty(&connection->language)) {
@@ -911,11 +1032,12 @@ tds_release_cursor(TDSSOCKET *tds, TDSCURSOR *cursor)
 TDSLOGIN *
 tds_alloc_login(void)
 {
-	TDSLOGIN *tds_login;
-
+	TDSLOGIN *tds_login = NULL;
+	const char *server_name = "SYBASE";
+	char *s;
+	
 	TEST_MALLOC(tds_login, TDSLOGIN);
 	tds_dstr_init(&tds_login->server_name);
-	tds_dstr_init(&tds_login->server_addr);
 	tds_dstr_init(&tds_login->language);
 	tds_dstr_init(&tds_login->server_charset);
 	tds_dstr_init(&tds_login->client_host_name);
@@ -924,11 +1046,22 @@ tds_alloc_login(void)
 	tds_dstr_init(&tds_login->password);
 	tds_dstr_init(&tds_login->library);
 	tds_dstr_init(&tds_login->client_charset);
-	memcpy(tds_login->capabilities, defaultcaps, TDS_MAX_CAPABILITY);
-	return tds_login;
 
-      Cleanup:
-	return NULL;
+	if ((s=getenv("DSQUERY")) != NULL)
+		server_name = s;
+
+	if ((s=getenv("TDSQUERY")) != NULL)
+		server_name = s;
+
+	if (!tds_dstr_copy(&tds_login->server_name, server_name)) {
+		free(tds_login);
+		return NULL;
+	}
+
+	memcpy(tds_login->capabilities, defaultcaps, TDS_MAX_CAPABILITY);
+
+	Cleanup:
+	return tds_login;
 }
 
 void
@@ -939,7 +1072,6 @@ tds_free_login(TDSLOGIN * login)
 		tds_dstr_zero(&login->password);
 		tds_dstr_free(&login->password);
 		tds_dstr_free(&login->server_name);
-		tds_dstr_free(&login->server_addr);
 		tds_dstr_free(&login->language);
 		tds_dstr_free(&login->server_charset);
 		tds_dstr_free(&login->client_host_name);
@@ -950,6 +1082,7 @@ tds_free_login(TDSLOGIN * login)
 		free(login);
 	}
 }
+
 TDSSOCKET *
 tds_alloc_socket(TDSCONTEXT * context, int bufsize)
 {
@@ -961,14 +1094,9 @@ tds_alloc_socket(TDSCONTEXT * context, int bufsize)
 	TEST_CALLOC(tds_socket->out_buf, unsigned char, bufsize + TDS_ADDITIONAL_SPACE);
 
 	tds_socket->parent = NULL;
-	/*
-	 * TDS 7.0: 
-	 * 0x02 indicates ODBC driver
-	 * 0x01 means change to initial language must succeed
-	 */
-	tds_socket->option_flag2 = 0x03;
 	tds_socket->env.block_size = bufsize;
 
+	tds_socket->use_iconv = 1;
 	if (tds_iconv_alloc(tds_socket))
 		goto Cleanup;
 
@@ -985,7 +1113,7 @@ tds_alloc_socket(TDSCONTEXT * context, int bufsize)
 }
 
 TDSSOCKET *
-tds_realloc_socket(TDSSOCKET * tds, int bufsize)
+tds_realloc_socket(TDSSOCKET * tds, size_t bufsize)
 {
 	unsigned char *new_out_buf;
 
@@ -994,9 +1122,10 @@ tds_realloc_socket(TDSSOCKET * tds, int bufsize)
 	if (tds->env.block_size == bufsize)
 		return tds;
 
-	if ((new_out_buf = (unsigned char *) realloc(tds->out_buf, bufsize + TDS_ADDITIONAL_SPACE)) != NULL) {
+	if (tds->out_pos <= bufsize && bufsize > 0 && 
+	    (new_out_buf = (unsigned char *) realloc(tds->out_buf, bufsize + TDS_ADDITIONAL_SPACE)) != NULL) {
 		tds->out_buf = new_out_buf;
-		tds->env.block_size = bufsize;
+		tds->env.block_size = (int)bufsize;
 		return tds;
 	}
 	return NULL;
@@ -1021,7 +1150,6 @@ tds_free_socket(TDSSOCKET * tds)
 		tds_ssl_deinit(tds);
 #endif
 		tds_close_socket(tds);
-		free(tds->date_fmt);
 		tds_iconv_free(tds);
 		free(tds->product_name);
 		free(tds);
@@ -1036,13 +1164,15 @@ tds_free_locale(TDSLOCALE * locale)
 	free(locale->language);
 	free(locale->server_charset);
 	free(locale->date_fmt);
-	free(locale->client_charset);
 	free(locale);
 }
 
 void
 tds_free_connection(TDSCONNECTION * connection)
 {
+	if (!connection)
+		return;
+
 	tds_dstr_free(&connection->server_name);
 	tds_dstr_free(&connection->client_host_name);
 	tds_dstr_free(&connection->server_host_name);
@@ -1059,6 +1189,7 @@ tds_free_connection(TDSCONNECTION * connection)
 	tds_dstr_free(&connection->password);
 	tds_dstr_free(&connection->library);
 	tds_dstr_free(&connection->instance_name);
+	tds_dstr_init(&connection->server_realm_name);
 	free(connection);
 }
 

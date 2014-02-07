@@ -5,7 +5,7 @@
 
 #include "common.h"
 
-static char software_version[] = "$Id: text_buffer.c,v 1.3 2007/12/04 02:06:38 jklowden Exp $";
+static char software_version[] = "$Id: text_buffer.c,v 1.6 2009/02/27 15:52:48 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 
@@ -22,7 +22,7 @@ main(int argc, char **argv)
 
 	read_login_info(argc, argv);
 
-	fprintf(stdout, "Start\n");
+	fprintf(stdout, "Starting %s\n", argv[0]);
 	add_bread_crumb();
 
 	/* Fortify_EnterScope(); */
@@ -59,19 +59,19 @@ main(int argc, char **argv)
 	add_bread_crumb();
 
 	fprintf(stdout, "creating table\n");
-	dbcmd(dbproc, "create table #dblib (i int not null, s text)");
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	while (dbresults(dbproc) != NO_MORE_RESULTS) {
 		/* nop */
 	}
 
 	fprintf(stdout, "insert\n");
-	dbcmd(dbproc, "insert into #dblib values (1, 'ABCDEF')");
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	while (dbresults(dbproc) != NO_MORE_RESULTS) {
 		/* nop */
 	}
-	dbcmd(dbproc, "insert into #dblib values (2, 'abc')");
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	while (dbresults(dbproc) != NO_MORE_RESULTS) {
 		/* nop */
@@ -147,7 +147,7 @@ main(int argc, char **argv)
 	dbexit();
 	add_bread_crumb();
 
-	printf("dblib passed for %s\n", __FILE__);
+	fprintf(stdout, "%s %s\n", __FILE__, (0 ? "failed!" : "OK"));
 	free_bread_crumb();
 	return 0;
 }

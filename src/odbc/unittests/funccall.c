@@ -2,7 +2,7 @@
 
 /* Test for {?=call store(?)} syntax and run */
 
-static char software_version[] = "$Id: funccall.c,v 1.14 2007/04/12 13:36:14 freddy77 Exp $";
+static char software_version[] = "$Id: funccall.c,v 1.18 2010/07/05 09:20:33 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 int
@@ -13,31 +13,21 @@ main(int argc, char *argv[])
 	SQLINTEGER out1;
 	char out2[30];
 
-	Connect();
+	odbc_connect();
 
-	if (CommandWithResult(Statement, "drop proc simpleresult") != SQL_SUCCESS)
-		printf("Unable to execute statement\n");
+	odbc_command("IF OBJECT_ID('simpleresult') IS NOT NULL DROP PROC simpleresult");
 
-	Command(Statement, "create proc simpleresult @i int as begin return @i end");
+	odbc_command("create proc simpleresult @i int as begin return @i end");
 
-	if (SQLBindParameter(Statement, 2, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &input, 0, &ind2) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Unable to bind input parameter");
+	CHKBindParameter(2, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &input, 0, &ind2, "S");
+	CHKBindParameter(1, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &output, 0, &ind, "S");
 
-	if (SQLBindParameter(Statement, 1, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &output, 0, &ind) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Unable to bind output parameter");
-
-	if (SQLPrepare(Statement, (SQLCHAR *) "{ \n?\t\r= call simpleresult(?)}", SQL_NTS) != SQL_SUCCESS) {
-		printf("Unable to prepare statement\n");
-		exit(1);
-	}
+	CHKPrepare((SQLCHAR *) "{ \n?\t\r= call simpleresult(?)}", SQL_NTS, "S");
 
 	input = 123;
 	ind2 = sizeof(input);
 	output = 0xdeadbeef;
-	if (SQLExecute(Statement) != SQL_SUCCESS) {
-		printf("Unable to execute statement\n");
-		exit(1);
-	}
+	CHKExecute("S");
 
 	if (output != 123) {
 		printf("Invalid result\n");
@@ -45,71 +35,44 @@ main(int argc, char *argv[])
 	}
 
 	/* should return "Invalid cursor state" */
-	if (SQLFetch(Statement) != SQL_ERROR) {
+	if (SQLFetch(odbc_stmt) != SQL_ERROR) {
 		printf("Data not expected\n");
 		exit(1);
 	}
 
 	/* just to reset some possible buffers */
-	Command(Statement, "DECLARE @i INT");
+	odbc_command("DECLARE @i INT");
 
 	/* same test but with SQLExecDirect and same bindings */
 	input = 567;
 	ind2 = sizeof(input);
 	output = 0xdeadbeef;
-	if (SQLExecDirect(Statement, (SQLCHAR *) "{?=call simpleresult(?)}", SQL_NTS) != SQL_SUCCESS) {
-		printf("Unable to execure direct statement\n");
-		exit(1);
-	}
+	CHKExecDirect((SQLCHAR *) "{?=call simpleresult(?)}", SQL_NTS, "S");
 
 	if (output != 567) {
-		printf("Invalid result\n");
+		fprintf(stderr, "Invalid result\n");
 		exit(1);
 	}
 
 	/* should return "Invalid cursor state" */
-	if (SQLFetch(Statement) != SQL_ERROR) {
-		printf("Data not expected\n");
-		exit(1);
-	}
+	CHKFetch("E");
 
-	Command(Statement, "drop proc simpleresult");
+	odbc_command("drop proc simpleresult");
 
-	if (CommandWithResult(Statement, "drop proc simpleresult2") != SQL_SUCCESS)
-		printf("Unable to execute statement\n");
+	odbc_command("IF OBJECT_ID('simpleresult2') IS NOT NULL DROP PROC simpleresult2");
 
 	/* force cursor close */
-	SQLCloseCursor(Statement);
+	SQLCloseCursor(odbc_stmt);
 
 	/* test output parameter */
-	Command(Statement,
-		"create proc simpleresult2 @i int, @x int output, @y varchar(20) output as begin select @x = 6789 select @y = 'test foo' return @i end");
+	odbc_command("create proc simpleresult2 @i int, @x int output, @y varchar(20) output as begin select @x = 6789 select @y = 'test foo' return @i end");
 
-	if (SQLBindParameter(Statement, 1, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &output, 0, &ind) != SQL_SUCCESS) {
-		printf("Unable to bind output parameter\n");
-		exit(1);
-	}
+	CHKBindParameter(1, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER, 0,  0, &output, 0,            &ind,  "S");
+	CHKBindParameter(2, SQL_PARAM_INPUT,  SQL_C_SLONG, SQL_INTEGER, 0,  0, &input,  0,            &ind2, "S");
+	CHKBindParameter(3, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER, 0,  0, &out1,   0,            &ind3, "S");
+	CHKBindParameter(4, SQL_PARAM_OUTPUT, SQL_C_CHAR,  SQL_VARCHAR, 20, 0, out2,    sizeof(out2), &ind4, "S");
 
-	if (SQLBindParameter(Statement, 2, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &input, 0, &ind2) != SQL_SUCCESS) {
-		printf("Unable to bind input parameter\n");
-		exit(1);
-	}
-
-	if (SQLBindParameter(Statement, 3, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &out1, 0, &ind3) != SQL_SUCCESS) {
-		printf("Unable to bind output parameter\n");
-		exit(1);
-	}
-
-	if (SQLBindParameter(Statement, 4, SQL_PARAM_OUTPUT, SQL_C_CHAR, SQL_VARCHAR, 20, 0, out2, sizeof(out2), &ind4) !=
-	    SQL_SUCCESS) {
-		printf("Unable to bind output parameter\n");
-		exit(1);
-	}
-
-	if (SQLPrepare(Statement, (SQLCHAR *) "{ \n?\t\r= call simpleresult2(?,?,?)}", SQL_NTS) != SQL_SUCCESS) {
-		printf("Unable to prepare statement\n");
-		exit(1);
-	}
+	CHKPrepare((SQLCHAR *) "{ \n?\t\r= call simpleresult2(?,?,?)}", SQL_NTS, "S");
 
 	input = 987;
 	ind2 = sizeof(input);
@@ -117,10 +80,7 @@ main(int argc, char *argv[])
 	output = 0xdeadbeef;
 	ind3 = SQL_DATA_AT_EXEC;
 	ind4 = SQL_DEFAULT_PARAM;
-	if (SQLExecute(Statement) != SQL_SUCCESS) {
-		printf("Unable to execute statement\n");
-		exit(1);
-	}
+	CHKExecute("S");
 
 	if (output != 987 || ind3 <= 0 || ind4 <= 0 || out1 != 6789 || strcmp(out2, "test foo") != 0) {
 		printf("ouput = %d ind3 = %d ind4 = %d out1 = %d out2 = %s\n", (int) output, (int) ind3, (int) ind4, (int) out1,
@@ -130,54 +90,41 @@ main(int argc, char *argv[])
 	}
 
 	/* should return "Invalid cursor state" */
-	if (SQLFetch(Statement) != SQL_ERROR) {
-		printf("Data not expected\n");
-		exit(1);
-	}
+	CHKFetch("E");
 
-	Command(Statement, "drop proc simpleresult2");
+	odbc_command("drop proc simpleresult2");
 
 	/*
 	 * test from shiv kumar
 	 * Cfr ML 2006-11-21 "specifying a 0 for the StrLen_or_IndPtr in the
 	 * SQLBindParameter call is not working on AIX"
 	 */
-	if (CommandWithResult(Statement, "drop proc rpc_read") != SQL_SUCCESS)
-		printf("Unable to execute statement\n");
+	odbc_command("IF OBJECT_ID('rpc_read') IS NOT NULL DROP PROC rpc_read");
 
-	SQLCloseCursor(Statement);
+	odbc_reset_statement();
 
-	Command(Statement, "create proc rpc_read @i int, @x timestamp as begin select 1 return 1234 end");
-	SQLCloseCursor(Statement);
-	SQLFreeStmt(Statement, SQL_CLOSE);
-	SQLFreeStmt(Statement, SQL_UNBIND);
+	odbc_command("create proc rpc_read @i int, @x timestamp as begin select 1 return 1234 end");
+	SQLCloseCursor(odbc_stmt);
 
-	if (SQLPrepare(Statement, (SQLCHAR *) "{ ? = CALL rpc_read ( ?, ? ) }" , SQL_NTS) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Unable to prepare statement\n");
+	CHKPrepare((SQLCHAR *) "{ ? = CALL rpc_read ( ?, ? ) }" , SQL_NTS, "S");
 
 	ind = 0;
-	if (SQLBindParameter(Statement, 1, SQL_PARAM_OUTPUT, SQL_C_LONG, SQL_INTEGER, 0, 0, &output, 0, &ind) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Unable to bind output parameter\n");
+	CHKBindParameter(1, SQL_PARAM_OUTPUT, SQL_C_LONG, SQL_INTEGER, 0, 0, &output, 0, &ind, "S");
 
 	ind2 = 0;
-	if (SQLBindParameter(Statement, 2, SQL_PARAM_INPUT, SQL_C_LONG, SQL_INTEGER, 0, 0, &input, 0, &ind2) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Unable to bind input parameter\n");
+	CHKBindParameter(2, SQL_PARAM_INPUT, SQL_C_LONG, SQL_INTEGER, 0, 0, &input, 0, &ind2, "S");
 
 	ind3 = 8;
-	if (SQLBindParameter(Statement, 3, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_VARBINARY, 8, 0, out2, 8, &ind3) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Unable to bind output parameter\n");
+	CHKBindParameter(3, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_VARBINARY, 8, 0, out2, 8, &ind3, "S");
 
-	if (SQLExecute(Statement) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Unable to execute statement\n");
+	CHKExecute("S");
 
-	if (SQLFetch(Statement) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Data not expected\n");
+	CHKFetch("S");
 
-	if (SQLFetch(Statement) != SQL_NO_DATA)
-		ODBC_REPORT_ERROR("Data not expected\n");
+	CHKFetch("No");
 
-	ResetStatement();
-	CommandWithResult(Statement, "drop proc rpc_read");
+	odbc_reset_statement();
+	odbc_command("drop proc rpc_read");
 
 	/*
 	 * Test from Joao Amaral
@@ -186,32 +133,29 @@ main(int argc, char *argv[])
 	 * (with is supported only by mssql and do not return all stuff as 
 	 * select does)
 	 */
-	if (db_is_microsoft()) {
+	if (odbc_db_is_microsoft()) {
 
-		ResetStatement();
+		odbc_reset_statement();
 
-		CommandWithResult(Statement, "drop proc sp_test");
-		Command(Statement, "create proc sp_test @res int output as set @res = 456");
+		odbc_command("IF OBJECT_ID('sp_test') IS NOT NULL DROP PROC sp_test");
+		odbc_command("create proc sp_test @res int output as set @res = 456");
 
-		ResetStatement();
+		odbc_reset_statement();
 
-		if (SQLPrepare(Statement, (SQLCHAR *) "{ call sp_test(?)}", SQL_NTS) != SQL_SUCCESS)
-			ODBC_REPORT_ERROR("Unable to prepare statement\n");
-		if (SQLBindParameter(Statement, 1, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &output, 0, &ind) != SQL_SUCCESS)
-			ODBC_REPORT_ERROR("Unable to bind output parameter\n");
+		CHKPrepare((SQLCHAR *) "{ call sp_test(?)}", SQL_NTS, "S");
+		CHKBindParameter(1, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &output, 0, &ind, "S");
 
 		output = 0xdeadbeef;
-		if (SQLExecute(Statement) != SQL_SUCCESS)
-			ODBC_REPORT_ERROR("Unable to execute statement\n");
+		CHKExecute("S");
 
 		if (output != 456) {
 			fprintf(stderr, "Invalid result %d(%x)\n", (int) output, (int) output);
 			return 1;
 		}
-		Command(Statement, "drop proc sp_test");
+		odbc_command("drop proc sp_test");
 	}
 
-	Disconnect();
+	odbc_disconnect();
 
 	printf("Done.\n");
 	return 0;

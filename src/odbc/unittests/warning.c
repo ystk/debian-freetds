@@ -14,7 +14,7 @@
  * inside recordset
  * Sybase do not return warning but test works the same
  */
-static char software_version[] = "$Id: warning.c,v 1.5 2007/05/17 13:11:56 freddy77 Exp $";
+static char software_version[] = "$Id: warning.c,v 1.10 2010/07/05 09:20:33 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 static const char one_null_with_warning[] = "select max(a) as foo from (select convert(int, null) as a) as test";
@@ -28,29 +28,13 @@ static const int tds_no_dm = 0;
 static void
 Test(const char *query)
 {
-	int res;
+	CHKPrepare((SQLCHAR *) query, SQL_NTS, "S");
 
-	if (SQLPrepare(Statement, (SQLCHAR *) query, SQL_NTS) != SQL_SUCCESS) {
-		fprintf(stderr, "Unable to prepare statement\n");
-		exit(1);
-	}
+	CHKExecute("S");
 
-	if (SQLExecute(Statement) != SQL_SUCCESS) {
-		fprintf(stderr, "Unable to execute statement\n");
-		exit(1);
-	}
+	CHKFetch("SI");
 
-	res = SQLFetch(Statement);
-	if (res != SQL_SUCCESS && res != SQL_SUCCESS_WITH_INFO) {
-		fprintf(stderr, "Unable to fetch row.\n");
-		CheckReturn();
-		exit(1);
-	}
-
-	if (SQLFetch(Statement) != SQL_NO_DATA) {
-		fprintf(stderr, "Warning was returned as a result row -- bad!\n");
-		exit(1);
-	}
+	CHKFetch("No");
 
 	/*
 	 * Microsoft SQL Server 2000 provides a diagnostic record
@@ -60,31 +44,28 @@ Test(const char *query)
 	 * We check for "NO DM" cause unixODBC till 2.2.11 do not read
 	 * errors on SQL_NO_DATA
 	 */
-	if (db_is_microsoft() && tds_no_dm) {
+	if (odbc_db_is_microsoft() && tds_no_dm) {
 		SQLCHAR output[256];
 
-		if (!SQL_SUCCEEDED(SQLGetDiagRec(SQL_HANDLE_STMT, Statement, 1, NULL, NULL, output, sizeof(output), NULL))) {
-			fprintf(stderr, "SQLGetDiagRec should not fail\n");
-			exit(1);
-		}
+		CHKGetDiagRec(SQL_HANDLE_STMT, odbc_stmt, 1, NULL, NULL, output, sizeof(output), NULL, "SI");
 		printf("Message: %s\n", (char *) output);
 	}
 
-	ResetStatement();
+	odbc_reset_statement();
 }
 
 int
 main(void)
 {
-	Connect();
+	odbc_connect();
 
-	Command(Statement, "CREATE TABLE #warning(name varchar(20), value int null)");
-	Command(Statement, "INSERT INTO #warning VALUES('a', NULL)");
+	odbc_command("CREATE TABLE #warning(name varchar(20), value int null)");
+	odbc_command("INSERT INTO #warning VALUES('a', NULL)");
 
 	Test(one_null_with_warning);
 	Test("SELECT SUM(value) FROM #warning");
 
-	Disconnect();
+	odbc_disconnect();
 
 	printf("Done.\n");
 	return 0;

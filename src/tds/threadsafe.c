@@ -1,6 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004  Brian Bruns
- * Copyright (C) 2005  Frediano Ziglio
+ * Copyright (C) 2005-2010  Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -74,7 +74,8 @@
 #include <arpa/inet.h>
 #endif /* HAVE_ARPA_INET_H */
 
-#ifdef WIN32
+#if defined(_WIN32) || defined(_WIN64)
+#include <winsock2.h>
 #include <shlobj.h>
 #endif
 
@@ -84,24 +85,43 @@
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: threadsafe.c,v 1.46 2007/05/30 07:56:38 freddy77 Exp $");
+TDS_RCSID(var, "$Id: threadsafe.c,v 1.50 2010/12/30 18:28:24 freddy77 Exp $");
+
+struct tm *
+tds_localtime_r(const time_t *timep, struct tm *result)
+{
+	struct tm *tm;
+
+#if defined(_REENTRANT) && !defined(_WIN32)
+#if HAVE_FUNC_LOCALTIME_R_TM
+	tm = localtime_r(timep, result);
+#else
+	tm = NULL;
+	if (!localtime_r(timep, result))
+		tm = result;
+#endif /* HAVE_FUNC_LOCALTIME_R_TM */
+#else
+	tm = localtime(timep);
+	if (tm) {
+		memcpy(result, tm, sizeof(*result));
+		tm = result;
+	}
+#endif
+	return tm;
+}
 
 char *
 tds_timestamp_str(char *str, int maxlen)
 {
-#if !defined(WIN32)
+#if !defined(_WIN32) && !defined(_WIN64)
 	struct tm *tm;
+	struct tm res;
 	time_t t;
 
 #if HAVE_GETTIMEOFDAY
 	struct timeval tv;
 	char usecs[10];
-#endif
-#if defined(_REENTRANT)
-	struct tm res;
-#endif
 
-#if HAVE_GETTIMEOFDAY
 	gettimeofday(&tv, NULL);
 	t = tv.tv_sec;
 #else
@@ -112,17 +132,7 @@ tds_timestamp_str(char *str, int maxlen)
 	time(&t);
 #endif
 
-#if defined(_REENTRANT)
-#if HAVE_FUNC_LOCALTIME_R_TM
-	tm = localtime_r(&t, &res);
-#else
-	tm = NULL;
-	if (!localtime_r(&t, &res))
-		tm = &res;
-#endif /* HAVE_FUNC_LOCALTIME_R_TM */
-#else
-	tm = localtime(&t);
-#endif
+	tm = tds_localtime_r(&t, &res);
 
 /**	strftime(str, maxlen - 6, "%Y-%m-%d %H:%M:%S", tm); **/
 	strftime(str, maxlen - 6, "%H:%M:%S", tm);
@@ -132,7 +142,7 @@ tds_timestamp_str(char *str, int maxlen)
 	strcat(str, usecs);
 #endif
 
-#else /* WIN32 */
+#else /* _WIN32 */
 	SYSTEMTIME st;
 
 	GetLocalTime(&st);
@@ -512,14 +522,16 @@ tds_getservbyname_r(const char *name, const char *proto, struct servent *result,
 char *
 tds_get_homedir(void)
 {
-#ifndef WIN32
+#ifndef _WIN32
 /* if is available getpwuid_r use it */
 #if defined(HAVE_GETUID) && defined(HAVE_GETPWUID_R)
 	struct passwd *pw, bpw;
 	char buf[1024];
 
 # if defined(HAVE_FUNC_GETPWUID_R_5)
-	if (getpwuid_r(getuid(), &bpw, buf, sizeof(buf), &pw))
+	/* getpwuid_r can return 0 if uid is not found so check pw */
+	pw = NULL;
+	if (getpwuid_r(getuid(), &bpw, buf, sizeof(buf), &pw) || !pw)
 		return NULL;
 
 # elif defined(HAVE_FUNC_GETPWUID_R_4_PW)
@@ -549,7 +561,7 @@ tds_get_homedir(void)
 		return NULL;
 	return strdup(home);
 #endif
-#else /* WIN32 */
+#else /* _WIN32 */
 	/*
 	 * For win32 we return application data cause we use "HOME" 
 	 * only to store configuration files

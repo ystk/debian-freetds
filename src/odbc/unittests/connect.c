@@ -1,7 +1,7 @@
 #include "common.h"
 
 
-static char software_version[] = "$Id: connect.c,v 1.9 2006/04/11 11:52:24 freddy77 Exp $";
+static char software_version[] = "$Id: connect.c,v 1.14 2010/07/19 11:52:15 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 static void init_connect(void);
@@ -9,27 +9,38 @@ static void init_connect(void);
 static void
 init_connect(void)
 {
-	if (SQLAllocEnv(&Environment) != SQL_SUCCESS) {
-		printf("Unable to allocate env\n");
-		exit(1);
-	}
-	if (SQLAllocConnect(Environment, &Connection) != SQL_SUCCESS) {
-		printf("Unable to allocate connection\n");
-		SQLFreeEnv(Environment);
-		exit(1);
-	}
+	CHKAllocEnv(&odbc_env, "S");
+	CHKAllocConnect(&odbc_conn, "S");
 }
+
+#ifdef _WIN32
+#include <odbcinst.h>
+
+static char *entry = NULL;
+
+static char *
+get_entry(const char *key)
+{
+	static char buf[256];
+
+	entry = NULL;
+	if (SQLGetPrivateProfileString(odbc_server, key, "", buf, sizeof(buf), "odbc.ini") > 0)
+		entry = buf;
+
+	return entry;
+}
+#endif
 
 int
 main(int argc, char *argv[])
 {
-	int res;
 	char tmp[2048];
 	SQLSMALLINT len;
-	int failures = 0;
+	int succeeded = 0;
 	int is_freetds = 1;
+	SQLRETURN rc;
 
-	if (read_login_info())
+	if (odbc_read_login_info())
 		exit(1);
 
 	/*
@@ -37,11 +48,11 @@ main(int argc, char *argv[])
 	 * is better to do it before connect cause uniODBC cache INIs
 	 * the name must be odbcinst.ini cause unixODBC accept only this name
 	 */
-	if (DRIVER[0]) {
+	if (odbc_driver[0]) {
 		FILE *f = fopen("odbcinst.ini", "w");
 
 		if (f) {
-			fprintf(f, "[FreeTDS]\nDriver = %s\n", DRIVER);
+			fprintf(f, "[FreeTDS]\nDriver = %s\n", odbc_driver);
 			fclose(f);
 			/* force iODBC */
 			setenv("ODBCINSTINI", "./odbcinst.ini", 1);
@@ -52,10 +63,11 @@ main(int argc, char *argv[])
 	}
 
 	printf("SQLConnect connect..\n");
-	Connect();
-	if (!driver_is_freetds())
+	odbc_connect();
+	if (!odbc_driver_is_freetds())
 		is_freetds = 0;
-	Disconnect();
+	odbc_disconnect();
+	++succeeded;
 
 	if (!is_freetds) {
 		printf("Driver is not FreeTDS, exiting\n");
@@ -65,14 +77,10 @@ main(int argc, char *argv[])
 	/* try connect string with using DSN */
 	printf("connect string DSN connect..\n");
 	init_connect();
-	sprintf(tmp, "DSN=%s;UID=%s;PWD=%s;DATABASE=%s;", SERVER, USER, PASSWORD, DATABASE);
-	res = SQLDriverConnect(Connection, NULL, (SQLCHAR *) tmp, SQL_NTS, (SQLCHAR *) tmp, sizeof(tmp), &len, SQL_DRIVER_NOPROMPT);
-	if (!SQL_SUCCEEDED(res)) {
-		fprintf(stderr, "Unable to open data source (ret=%d)\n", res);
-		CheckReturn();
-		return 1;
-	}
-	Disconnect();
+	sprintf(tmp, "DSN=%s;UID=%s;PWD=%s;DATABASE=%s;", odbc_server, odbc_user, odbc_password, odbc_database);
+	CHKDriverConnect(NULL, (SQLCHAR *) tmp, SQL_NTS, (SQLCHAR *) tmp, sizeof(tmp), &len, SQL_DRIVER_NOPROMPT, "SI");
+	odbc_disconnect();
+	++succeeded;
 
 	/* try connect string using old SERVERNAME specification */
 	printf("connect string SERVERNAME connect..\n");
@@ -80,27 +88,45 @@ main(int argc, char *argv[])
 
 	/* this is expected to work with unixODBC */
 	init_connect();
-	sprintf(tmp, "DRIVER=FreeTDS;SERVERNAME=%s;UID=%s;PWD=%s;DATABASE=%s;", SERVER, USER, PASSWORD, DATABASE);
-	res = SQLDriverConnect(Connection, NULL, (SQLCHAR *) tmp, SQL_NTS, (SQLCHAR *) tmp, sizeof(tmp), &len, SQL_DRIVER_NOPROMPT);
-	if (!SQL_SUCCEEDED(res)) {
-		printf("Unable to open data source (ret=%d)\n", res);
-		++failures;
+	sprintf(tmp, "DRIVER=FreeTDS;SERVERNAME=%s;UID=%s;PWD=%s;DATABASE=%s;", odbc_server, odbc_user, odbc_password, odbc_database);
+	rc = CHKDriverConnect(NULL, (SQLCHAR *) tmp, SQL_NTS, (SQLCHAR *) tmp, sizeof(tmp), &len, SQL_DRIVER_NOPROMPT, "SIE");
+	if (rc == SQL_ERROR) {
+		printf("Unable to open data source (ret=%d)\n", rc);
+	} else {
+		++succeeded;
 	}
-	Disconnect();
+	odbc_disconnect();
 
 	/* this is expected to work with iODBC */
 	init_connect();
-	sprintf(tmp, "DRIVER=%s;SERVERNAME=%s;UID=%s;PWD=%s;DATABASE=%s;", DRIVER, SERVER, USER, PASSWORD, DATABASE);
-	res = SQLDriverConnect(Connection, NULL, (SQLCHAR *) tmp, SQL_NTS, (SQLCHAR *) tmp, sizeof(tmp), &len, SQL_DRIVER_NOPROMPT);
-	if (!SQL_SUCCEEDED(res)) {
-		printf("Unable to open data source (ret=%d)\n", res);
-		++failures;
+	sprintf(tmp, "DRIVER=%s;SERVERNAME=%s;UID=%s;PWD=%s;DATABASE=%s;", odbc_driver, odbc_server, odbc_user, odbc_password, odbc_database);
+	rc = CHKDriverConnect(NULL, (SQLCHAR *) tmp, SQL_NTS, (SQLCHAR *) tmp, sizeof(tmp), &len, SQL_DRIVER_NOPROMPT, "SIE");
+	if (rc == SQL_ERROR) {
+		printf("Unable to open data source (ret=%d)\n", rc);
+	} else {
+		++succeeded;
 	}
-	Disconnect();
+	odbc_disconnect();
+
+#ifdef _WIN32
+	if (get_entry("SERVER")) {
+		init_connect();
+		sprintf(tmp, "DRIVER=FreeTDS;SERVER=%s;UID=%s;PWD=%s;DATABASE=%s;", entry, odbc_user, odbc_password, odbc_database);
+		if (get_entry("TDS_Version"))
+			sprintf(strchr(tmp, 0), "TDS_Version=%s;", entry);
+		rc = CHKDriverConnect(NULL, (SQLCHAR *) tmp, SQL_NTS, (SQLCHAR *) tmp, sizeof(tmp), &len, SQL_DRIVER_NOPROMPT, "SIE");
+		if (rc == SQL_ERROR) {
+			printf("Unable to open data source (ret=%d)\n", rc);
+		} else {
+			++succeeded;
+		}
+		odbc_disconnect();
+	}
+#endif
 
 	/* at least one should success.. */
-	if (failures > 1) {
-		CheckReturn();
+	if (succeeded < 3) {
+		ODBC_REPORT_ERROR("Too few successes");
 		exit(1);
 	}
 

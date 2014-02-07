@@ -24,6 +24,10 @@
 #include <stdio.h>
 #include <ctype.h>
 
+#if HAVE_ERRNO_H
+#include <errno.h>
+#endif /* HAVE_ERRNO_H */
+
 #if HAVE_STDLIB_H
 #include <stdlib.h>
 #endif /* HAVE_STDLIB_H */
@@ -40,12 +44,17 @@
 #include <unistd.h>
 #endif
 
+#if HAVE_LOCALE_H
+#include <locale.h>
+#endif
+
 #include "tds.h"
+#include "replacements.h"
 #include <sybfront.h>
 #include <sybdb.h>
 #include "freebcp.h"
 
-static char software_version[] = "$Id: freebcp.c,v 1.48 2006/12/01 21:51:11 jklowden Exp $";
+static char software_version[] = "$Id: freebcp.c,v 1.59 2011/03/13 21:32:49 jklowden Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 void pusage(void);
@@ -68,6 +77,13 @@ main(int argc, char **argv)
 	BCPPARAMDATA params;
 	DBPROCESS *dbproc;
 	int ok = FALSE;
+
+	setlocale(LC_ALL, "");
+
+#ifdef __VMS
+        /* Convert VMS-style arguments to Unix-style */
+        parse_vms_args(&argc, &argv);
+#endif
 
 	memset(&params, '\0', sizeof(params));
 
@@ -170,13 +186,13 @@ process_parameters(int argc, char **argv, BCPPARAMDATA *pdata)
 	}
 
 	/* argument 2 - the direction */
-	strcpy(pdata->dbdirection, argv[2]);
+	tds_strlcpy(pdata->dbdirection, argv[2], sizeof(pdata->dbdirection));
 
-	if (strcmp(pdata->dbdirection, "in") == 0) {
+	if (strcasecmp(pdata->dbdirection, "in") == 0) {
 		pdata->direction = DB_IN;
-	} else if (strcmp(pdata->dbdirection, "out") == 0) {
+	} else if (strcasecmp(pdata->dbdirection, "out") == 0) {
 		pdata->direction = DB_OUT;
-	} else if (strcmp(pdata->dbdirection, "queryout") == 0) {
+	} else if (strcasecmp(pdata->dbdirection, "queryout") == 0) {
 		pdata->direction = DB_QUERYOUT;
 	} else {
 		fprintf(stderr, "Copy direction must be either 'in', 'out' or 'queryout'.\n");
@@ -184,13 +200,14 @@ process_parameters(int argc, char **argv, BCPPARAMDATA *pdata)
 	}
 
 	/* argument 3 - the datafile name */
-	strcpy(pdata->hostfilename, argv[3]);
+	free(pdata->hostfilename);
+	pdata->hostfilename = strdup(argv[3]);
 
 	/* 
 	 * Get the rest of the arguments 
 	 */
 	optind = 4; /* start processing options after table, direction, & filename */
-	while ((ch = getopt(argc, argv, "m:f:e:F:L:b:t:r:U:P:I:S:h:T:A:O:0:ncEdvV")) != -1) {
+	while ((ch = getopt(argc, argv, "m:f:e:F:L:b:t:r:U:P:i:I:S:h:T:A:o:O:0:C:ncEdvV")) != -1) {
 		switch (ch) {
 		case 'v':
 		case 'V':
@@ -203,7 +220,8 @@ process_parameters(int argc, char **argv, BCPPARAMDATA *pdata)
 			break;
 		case 'f':
 			pdata->fflag++;
-			strcpy(pdata->formatfile, optarg);
+			free(pdata->formatfile);
+			pdata->formatfile = strdup(optarg);
 			break;
 		case 'e':
 			pdata->eflag++;
@@ -256,13 +274,20 @@ process_parameters(int argc, char **argv, BCPPARAMDATA *pdata)
 				nl = strchr(pwd, '\n');
 				if(nl) *nl = '\0';
 				pdata->pass = strdup(pwd);
+				memset(pwd, 0, 255);
 			} else {
 				pdata->pass = strdup(optarg);
+				memset(optarg, 0, strlen(optarg));
 			}
+			break;
+		case 'i':
+			free(pdata->inputfile);
+			pdata->inputfile = strdup(optarg);
 			break;
 		case 'I':
 			pdata->Iflag++;
-			strcpy(pdata->interfacesfile, optarg);
+			free(pdata->interfacesfile);
+			pdata->interfacesfile = strdup(optarg);
 			break;
 		case 'S':
 			pdata->Sflag++;
@@ -270,6 +295,10 @@ process_parameters(int argc, char **argv, BCPPARAMDATA *pdata)
 			break;
 		case 'h':
 			pdata->hint = strdup(optarg);
+			break;
+		case 'o':
+			free(pdata->outputfile);
+			pdata->outputfile = strdup(optarg);
 			break;
 		case 'O':
 		case '0':
@@ -283,6 +312,9 @@ process_parameters(int argc, char **argv, BCPPARAMDATA *pdata)
 			pdata->Aflag++;
 			pdata->packetsize = atoi(optarg);
 			break;
+		case 'C':
+			pdata->charset = strdup(optarg);
+			break;
 		case '?':
 		default:
 			pusage();
@@ -292,21 +324,27 @@ process_parameters(int argc, char **argv, BCPPARAMDATA *pdata)
 
 	/* 
 	 * Check for required/disallowed option combinations 
+	 * If no username is provided, rely on domain login. 
 	 */
 	 
-	/* these must be specified */
-	if (!pdata->Uflag || !pdata->Pflag || !pdata->Sflag) {
-		fprintf(stderr, "All 3 options -U, -P, -S must be supplied.\n");
-		return (FALSE);
+	/* Server */
+	if (!pdata->Sflag) {
+		if ((pdata->server = getenv("DSQUERY")) != NULL) {
+			pdata->server = strdup(pdata->server);	/* can be freed */
+			pdata->Sflag++;
+		} else {
+			fprintf(stderr, "-S must be supplied.\n");
+			return (FALSE);
+		}
 	}
 
-	/* only one of these can be specified */
+	/* Only one of these can be specified */
 	if (pdata->cflag + pdata->nflag + pdata->fflag != 1) {
 		fprintf(stderr, "Exactly one of options -c, -n, -f must be supplied.\n");
 		return (FALSE);
 	}
 
-	/* character mode file: Fill in some default values*/
+	/* Character mode file: fill in default values */
 	if (pdata->cflag) {
 
 		if (!pdata->tflag || !pdata->fieldterm) {	/* field terminator not specified */
@@ -316,6 +354,27 @@ process_parameters(int argc, char **argv, BCPPARAMDATA *pdata)
 		if (!pdata->rflag || !pdata->rowterm) {		/* row terminator not specified */
 			pdata->rowterm =  "\n";
 			pdata->rowtermlen = 1;
+		}
+	}
+
+	/*
+	 * Override stdin and/or stdout if requested.
+	 */
+
+	/* FIXME -- Since we don't implement prompting for field data types when neither -c nor -n
+	 * is specified, redirecting stdin doesn't do much yet.
+	 */
+	if (pdata->inputfile) {
+		if (freopen(pdata->inputfile, "rb", stdin) == NULL) {
+			fprintf(stderr, "%s: unable to open %s: %s\n", "freebcp", pdata->inputfile, strerror(errno));
+			exit(1);
+		}
+	}
+
+	if (pdata->outputfile) {
+		if (freopen(pdata->outputfile, "wb", stdout) == NULL) {
+			fprintf(stderr, "%s: unable to open %s: %s\n", "freebcp", pdata->outputfile, strerror(errno));
+			exit(1);
 		}
 	}
 
@@ -351,12 +410,19 @@ login_to_database(BCPPARAMDATA * pdata, DBPROCESS ** pdbproc)
 	 */
 
 	login = dblogin();
+	if (!login)
+		return FALSE;
 
-	DBSETLUSER(login, pdata->user);
-	DBSETLPWD(login, pdata->pass);
+	if (pdata->user)
+		DBSETLUSER(login, pdata->user);
+	if (pdata->pass) {
+		DBSETLPWD(login, pdata->pass);
+		memset(pdata->pass, 0, strlen(pdata->pass));
+	}
+	
 	DBSETLAPP(login, "FreeBCP");
-
-	/* if packet size specified, set in login record */
+	if (pdata->charset)
+		DBSETLCHARSET(login, pdata->charset);
 
 	if (pdata->Aflag && pdata->packetsize > 0) {
 		DBSETLPACKET(login, pdata->packetsize);
@@ -367,13 +433,16 @@ login_to_database(BCPPARAMDATA * pdata, DBPROCESS ** pdbproc)
 	BCP_SETL(login, TRUE);
 
 	/*
-	 * ** Get a connection to the database.
+	 * Get a connection to the database.
 	 */
 
 	if ((*pdbproc = dbopen(login, pdata->server)) == NULL) {
 		fprintf(stderr, "Can't connect to server \"%s\".\n", pdata->server);
+		dbloginfree(login);
 		return (FALSE);
 	}
+	dbloginfree(login);
+	login = NULL;
 
 	/* set hint if any */
 	if (pdata->hint) {
@@ -686,6 +755,7 @@ pusage(void)
 	fprintf(stderr, "        [-U username] [-P password] [-I interfaces_file] [-S server]\n");
 	fprintf(stderr, "        [-v] [-d] [-h \"hint [,...]\" [-O \"set connection_option on|off, ...]\"\n");
 	fprintf(stderr, "        [-A packet size] [-T text or image size] [-E]\n");
+	fprintf(stderr, "        [-i input_file] [-o output_file]\n");
 	fprintf(stderr, "        \n");
 	fprintf(stderr, "example: freebcp testdb.dbo.inserttest in inserttest.txt -S mssql -U guest -P password -c\n");
 }

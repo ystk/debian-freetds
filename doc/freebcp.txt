@@ -48,7 +48,7 @@ TABLES AND FILES
 OPTIONS
   -c            The host data file is (or will be) in "character" format,
   		i.e., a text file. Encoding is determined by the 
-		client charset attribute in freetds.conf.  
+		client charset attribute in freetds.conf.
 
   -n            The host data file is in "native" format.
                 This is a format that freebcp will be able to process,
@@ -86,7 +86,8 @@ OPTIONS
 
   -S servername  The name of the Database Server to which to connect. 
 
-  -U username   A database login name. 
+  -U username   A database login name. If username is not provided, a domain
+  login is attempted for TDS 7+ connections.
 
   -P password   A database password.
 
@@ -119,10 +120,13 @@ OPTIONS
 
   -v -V		Print the version information and exit. 
 
+ENVIRONMENT
+  DSQUERY	default servername
+
 NOTES
   When connecting to a Sybase database server, it is required that the
   TDS 5.0 protocol be used. When connecting to a Microsoft SQL Server
-  2000 database server, the TDS 8.0 protocol is required.
+  2000 database server, the TDS 7.1 protocol is required.
 
   Theoretically both Sybase and Microsoft support the TDS 4.2 protocol,
   but in reality they implement the bcp portion of TDS 4.2 differently.

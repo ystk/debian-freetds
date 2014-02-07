@@ -34,6 +34,7 @@ libct.so.4 libct4 #MINVER#
  cs_locale@Base 0.64
  cs_manage_convert@Base 0.64
  cs_objects@Base 0.64
+ cs_prretcode@Base 0.91
  cs_set_convert@Base 0.64
  cs_setnull@Base 0.64
  cs_strbuild@Base 0.64

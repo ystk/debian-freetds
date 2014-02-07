@@ -2,7 +2,7 @@
 
 /* Test SQLCopyDesc and SQLAllocHandle(SQL_HANDLE_DESC) */
 
-static char software_version[] = "$Id: copydesc.c,v 1.3 2007/04/12 07:49:30 freddy77 Exp $";
+static char software_version[] = "$Id: copydesc.c,v 1.7 2010/07/05 09:20:32 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 int
@@ -13,28 +13,26 @@ main(int argc, char *argv[])
 	SQLLEN ind1, ind2;
 	char name[64];
 
-	Connect();
+	odbc_connect();
 
-	if (SQLGetStmtAttr(Statement, SQL_ATTR_APP_ROW_DESC, &ard, 0, NULL) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("SQLGetStmtAttr");
+	CHKGetStmtAttr(SQL_ATTR_APP_ROW_DESC, &ard, 0, NULL, "S");
 
-	SQLBindCol(Statement, 1, SQL_C_SLONG, &id, sizeof(SQLINTEGER), &ind1);
-	SQLBindCol(Statement, 2, SQL_C_CHAR, name, sizeof(name), &ind2);
+	CHKBindCol(1, SQL_C_SLONG, &id, sizeof(SQLINTEGER), &ind1, "S");
+	CHKBindCol(2, SQL_C_CHAR, name, sizeof(name), &ind2, "S");
 
-	if (SQLAllocHandle(SQL_HANDLE_DESC, Connection, &ard2) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("SQLAllocHandle");
+	CHKAllocHandle(SQL_HANDLE_DESC, odbc_conn, &ard2, "S");
 
 	/*
 	 * this is an additional test to test additional allocation 
 	 * As of 0.64 for a bug in SQLAllocDesc we only allow to allocate one
 	 */
-	if (SQLAllocHandle(SQL_HANDLE_DESC, Connection, &ard3) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("SQLAllocHandle");
+	CHKAllocHandle(SQL_HANDLE_DESC, odbc_conn, &ard3, "S");
 
-	if (SQLCopyDesc(ard, ard2) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("SQLCopyDesc");
+	CHKR(SQLCopyDesc, (ard, ard2), "S");
 
-	Disconnect();
+	CHKFreeHandle(SQL_HANDLE_DESC, ard3, "S");
+
+	odbc_disconnect();
 
 	printf("Done.\n");
 	return 0;

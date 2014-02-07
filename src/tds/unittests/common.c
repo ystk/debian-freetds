@@ -1,6 +1,6 @@
 #include "common.h"
 
-static char software_version[] = "$Id: common.c,v 1.26 2005/04/15 20:30:18 freddy77 Exp $";
+static char software_version[] = "$Id: common.c,v 1.30 2010/06/19 07:53:21 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 char USER[512];
@@ -15,11 +15,15 @@ int read_login_info(void);
 int
 read_login_info(void)
 {
-	FILE *in;
+	FILE *in = NULL;
 	char line[512];
 	char *s1, *s2;
 
-	in = fopen("../../../PWD", "r");
+	s1 = getenv("TDSPWDFILE");
+	if (s1 && s1[0])
+		in = fopen(s1, "r");
+	if (!in)
+		in = fopen("../../../PWD", "r");
 	if (!in) {
 		fprintf(stderr, "Can not open PWD file\n\n");
 		return TDS_FAIL;
@@ -92,14 +96,14 @@ try_tds_login(TDSLOGIN ** login, TDSSOCKET ** tds, const char *appname, int verb
 	test_context = tds_alloc_context(NULL);
 	*tds = tds_alloc_socket(test_context, 512);
 	tds_set_parent(*tds, NULL);
-	connection = tds_read_config_info(NULL, *login, test_context->locale);
-	if (!connection || tds_connect(*tds, connection) == TDS_FAIL) {
+	connection = tds_read_config_info(*tds, *login, test_context->locale);
+	if (!connection || tds_connect_and_login(*tds, connection) != TDS_SUCCEED) {
 		if (connection) {
 			tds_free_socket(*tds);
 			*tds = NULL;
 			tds_free_connection(connection);
 		}
-		fprintf(stderr, "tds_connect() failed\n");
+		fprintf(stderr, "tds_connect_and_login() failed\n");
 		return TDS_FAIL;
 	}
 	tds_free_connection(connection);
