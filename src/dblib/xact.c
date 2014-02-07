@@ -28,18 +28,19 @@
 #include <unistd.h>
 #endif /* HAVE_UNISTD_H */
 
-#include "tds.h"
-#include "sybfront.h"
-#include "sybdb.h"
-#include "dblib.h"
+#include <tds.h>
+#include <sybfront.h>
+#include <sybdb.h>
+#include <dblib.h>
 
 #ifdef DMALLOC
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: xact.c,v 1.11 2006/12/26 14:56:19 freddy77 Exp $");
+TDS_RCSID(var, "$Id: xact.c,v 1.14 2009/03/24 01:22:14 jklowden Exp $");
 
 
+#if defined(DBLIB_UNIMPLEMENTED)
 void
 build_xact_string(char *xact_name, char *service_name, DBINT commid, char *result)
 {
@@ -100,3 +101,4 @@ stat_xact(DBPROCESS * connect, DBINT commid)
 	tdsdump_log(TDS_DBG_FUNC, "UNIMPLEMENTED stat_xact()\n");
 	return 0;
 }
+#endif

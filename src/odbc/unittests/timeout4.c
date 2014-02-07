@@ -39,7 +39,7 @@
  * prepare or execute a query. This should fail and return an error message.
  */
 
-static char software_version[] = "$Id: timeout4.c,v 1.1 2007/04/20 09:15:06 freddy77 Exp $";
+static char software_version[] = "$Id: timeout4.c,v 1.6 2010/07/05 09:20:33 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 #if HAVE_FSTAT && defined(S_IFSOCK)
@@ -80,41 +80,33 @@ static int
 Test(int direct)
 {
 	char buf[256];
-	SQLRETURN ret;
 	char sqlstate[6];
 	time_t start_time, end_time;
 
-	Connect();
+	odbc_connect();
 
 	if (!shutdown_last_socket()) {
 		fprintf(stderr, "Error shutting down connection\n");
 		return 1;
 	}
 
-	ret = SQLSetStmtAttr(Statement, SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER) 10, SQL_IS_UINTEGER);
-	if (ret != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Error setting timeout");
+	CHKSetStmtAttr(SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER) 10, SQL_IS_UINTEGER, "S");
 
 	alarm(30);
 	start_time = time(NULL);
-	if (direct)
-		ret = SQLExecDirect(Statement, (SQLCHAR *) "SELECT 1", SQL_NTS);
-	else
-		ret = SQLPrepare(Statement, (SQLCHAR *) "SELECT 1", SQL_NTS);
+	if (direct) {
+		CHKExecDirect((SQLCHAR *) "SELECT 1", SQL_NTS, "E");
+	} else {
+		SQLSMALLINT cols;
+		/* force dialog with server */
+		if (CHKPrepare((SQLCHAR *) "SELECT 1", SQL_NTS, "SE") == SQL_SUCCESS)
+			CHKNumResultCols(&cols, "E");
+	}
 	end_time = time(NULL);
 	alarm(0);
-	if (ret != SQL_ERROR) {
-		fprintf(stderr, "Error expected\n");
-		return 1;
-	}
 
 	strcpy(sqlstate, "XXXXX");
-	ret = SQLGetDiagRec(SQL_HANDLE_STMT, Statement, 1, (SQLCHAR *) sqlstate, NULL, (SQLCHAR *) buf, sizeof(buf), NULL);
-	if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
-		fprintf(stderr, "Error not set\n");
-		Disconnect();
-		return 1;
-	}
+	CHKGetDiagRec(SQL_HANDLE_STMT, odbc_stmt, 1, (SQLCHAR *) sqlstate, NULL, (SQLCHAR *) buf, sizeof(buf), NULL, "SI");
 	sqlstate[5] = 0;
 	printf("Message: %s - %s\n", sqlstate, buf);
 	if (strcmp(sqlstate, "HYT00") || !strstr(buf, "Timeout")) {
@@ -126,7 +118,7 @@ Test(int direct)
 		return 1;
 	}
 
-	Disconnect();
+	odbc_disconnect();
 
 	if (end_socket >= 0)
 		close(end_socket);
@@ -138,7 +130,7 @@ Test(int direct)
 int
 main(void)
 {
-	use_odbc_version3 = 1;
+	odbc_use_version3 = 1;
 
 	if (Test(0) || Test(1))
 		return 1;

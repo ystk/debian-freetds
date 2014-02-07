@@ -7,7 +7,7 @@
 #include "common.h"
 #include <time.h>
 
-static char software_version[] = "$Id: timeout.c,v 1.3.2.2 2008/01/25 11:05:24 freddy77 Exp $";
+static char software_version[] = "$Id: timeout.c,v 1.8 2009/04/18 15:21:49 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 int ntimeouts = 0, ncancels = 0;
@@ -17,6 +17,12 @@ int start_time;
 int timeout_err_handler(DBPROCESS * dbproc, int severity, int dberr, int oserr, char *dberrstr, char *oserrstr);
 int chkintr(DBPROCESS * dbproc);
 int hndlintr(DBPROCESS * dbproc);
+
+#if !defined(SYBETIME)
+#define SYBETIME SQLETIME
+#define INT_TIMEOUT INT_CANCEL
+dbsetinterrupt(DBPROCESS *dbproc, void* hand, void* p) {}
+#endif
 
 int
 timeout_err_handler(DBPROCESS * dbproc, int severity, int dberr, int oserr, char *dberrstr, char *oserrstr)
@@ -101,7 +107,7 @@ main(int argc, char **argv)
 	
 	read_login_info(argc, argv);
 
-	fprintf(stdout, "Start\n");
+	fprintf(stdout, "Starting %s\n", argv[0]);
 	add_bread_crumb();
 
 	dbinit();
@@ -153,7 +159,7 @@ main(int argc, char **argv)
 	}
 	printf ("issuing a query that will take 30 seconds\n");
 
-	if (FAIL == dbcmd(dbproc, "select getdate() as 'begintime' waitfor delay '00:00:30' select getdate() as 'endtime' ")) {
+	if (FAIL == sql_cmd(dbproc)) {
 		fprintf(stderr, "Failed: dbcmd\n");
 		exit(1);
 	}
@@ -170,8 +176,8 @@ main(int argc, char **argv)
 	/* wait for it to execute */
 	printf("executing dbsqlok\n");
 	erc = dbsqlok(dbproc);
-	if (erc == FAIL) {
-		fprintf(stderr, "Failed: dbsqlok\n");
+	if (erc != FAIL) {
+		fprintf(stderr, "dbsqlok should fail for timeout\n");
 		exit(1);
 	}
 
@@ -216,8 +222,8 @@ main(int argc, char **argv)
 			}
 			break;
 		case FAIL:
-			printf("OK: dbresults returned FAIL, probably caused by the timeout\n");
-			break;
+			printf("dbresults returned FAIL\n");
+			exit(1);
 		default:
 			printf("unexpected return code %d from dbresults\n", erc);
 			exit(1);
@@ -231,7 +237,7 @@ main(int argc, char **argv)
 	dbexit();
 	add_bread_crumb();
 
-	fprintf(stdout, "dblib %s on %s\n", (failed ? "failed!" : "okay"), __FILE__);
+	fprintf(stdout, "%s %s\n", __FILE__, (failed ? "failed!" : "OK"));
 	free_bread_crumb();
 
 	return failed ? 1 : 0;

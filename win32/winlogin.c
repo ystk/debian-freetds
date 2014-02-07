@@ -49,7 +49,6 @@
 #include <assert.h>
 #include <ctype.h>
 #include <assert.h>
-#include <shlobj.h>
 
 #include "resource.h"
 
@@ -58,6 +57,8 @@
 #include "tdsstring.h"
 #include "tdsconvert.h"
 #include "replacements.h"
+
+#include <shlobj.h>
 
 #ifdef DMALLOC
 #include <dmalloc.h>
@@ -88,7 +89,7 @@ get_desktop_file(const char *file)
 	return res;
 }
 
-#ifndef WIN64
+#ifndef _WIN64
 #define GetWindowUserData(wnd)       GetWindowLong((wnd), GWL_USERDATA)
 #define SetWindowUserData(wnd, data) SetWindowLong((wnd), GWL_USERDATA, (data))
 #else

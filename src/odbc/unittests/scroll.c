@@ -2,12 +2,8 @@
 
 /* Test cursors */
 
-static char software_version[] = "$Id: scroll.c,v 1.6 2007/11/26 06:25:11 freddy77 Exp $";
+static char software_version[] = "$Id: scroll.c,v 1.10 2010/07/05 09:20:33 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
-
-#define CHK(func,params) \
-	if (func params != SQL_SUCCESS) \
-		ODBC_REPORT_ERROR(#func)
 
 int
 main(int argc, char *argv[])
@@ -22,7 +18,6 @@ main(int argc, char *argv[])
 	SQLUSMALLINT statuses[ROWS];
 	SQLUSMALLINT i;
 	SQLULEN num_row;
-	SQLRETURN retcode;
 	int i_test;
 
 	typedef struct _test
@@ -46,57 +41,46 @@ main(int argc, char *argv[])
 	};
 	const int num_tests = sizeof(tests) / sizeof(TEST);
 
-	use_odbc_version3 = 1;
+	odbc_use_version3 = 1;
 
-	Connect();
+	odbc_connect();
+	odbc_check_cursor();
 
 	/* create test table */
-	Command(Statement, "IF OBJECT_ID('tempdb..#test') IS NOT NULL DROP TABLE #test");
-	Command(Statement, "CREATE TABLE #test(i int, c varchar(6))");
-	Command(Statement, "INSERT INTO #test(i, c) VALUES(1, 'a')");
-	Command(Statement, "INSERT INTO #test(i, c) VALUES(2, 'bb')");
-	Command(Statement, "INSERT INTO #test(i, c) VALUES(3, 'ccc')");
-	Command(Statement, "INSERT INTO #test(i, c) VALUES(4, 'dddd')");
-	Command(Statement, "INSERT INTO #test(i, c) VALUES(5, 'eeeee')");
+	odbc_command("IF OBJECT_ID('tempdb..#test') IS NOT NULL DROP TABLE #test");
+	odbc_command("CREATE TABLE #test(i int, c varchar(6))");
+	odbc_command("INSERT INTO #test(i, c) VALUES(1, 'a')");
+	odbc_command("INSERT INTO #test(i, c) VALUES(2, 'bb')");
+	odbc_command("INSERT INTO #test(i, c) VALUES(3, 'ccc')");
+	odbc_command("INSERT INTO #test(i, c) VALUES(4, 'dddd')");
+	odbc_command("INSERT INTO #test(i, c) VALUES(5, 'eeeee')");
 
 	/* set cursor options */
-	ResetStatement();
-	retcode = SQLSetStmtAttr(Statement, SQL_ATTR_CONCURRENCY, (SQLPOINTER) SQL_CONCUR_ROWVER, 0);
-	if (retcode != SQL_SUCCESS) {
-		char output[256];
-		unsigned char sqlstate[6];
-
-		CHK(SQLGetDiagRec, (SQL_HANDLE_STMT, Statement, 1, sqlstate, NULL, (SQLCHAR *) output, sizeof(output), NULL));
-		sqlstate[5] = 0;
-		if (strcmp((const char*) sqlstate, "01S02") == 0) {
-			printf("Your connection seems to not support cursors, probably you are using wrong protocol version or Sybase\n");
-			Disconnect();
-			exit(0);
-		}
-		ODBC_REPORT_ERROR("SQLSetStmtAttr");
-	}
-
-
-	CHK(SQLSetStmtAttr, (Statement, SQL_ATTR_CURSOR_SCROLLABLE, (SQLPOINTER) SQL_SCROLLABLE, 0));
-	CHK(SQLSetStmtAttr, (Statement, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER) SQL_CURSOR_DYNAMIC, 0));
-	CHK(SQLSetStmtAttr, (Statement, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER) ROWS, 0));
-	CHK(SQLSetStmtAttr, (Statement, SQL_ATTR_ROW_STATUS_PTR, (SQLPOINTER) statuses, 0));
-	CHK(SQLSetStmtAttr, (Statement, SQL_ATTR_ROWS_FETCHED_PTR, &num_row, 0));
+	odbc_reset_statement();
+	CHKSetStmtAttr(SQL_ATTR_CONCURRENCY, (SQLPOINTER) SQL_CONCUR_ROWVER, 0, "S");
+	CHKSetStmtAttr(SQL_ATTR_CURSOR_SCROLLABLE, (SQLPOINTER) SQL_SCROLLABLE, 0, "S");
+	CHKSetStmtAttr(SQL_ATTR_CURSOR_TYPE, (SQLPOINTER) SQL_CURSOR_DYNAMIC, 0, "S");
+	CHKSetStmtAttr(SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER) ROWS, 0, "S");
+	CHKSetStmtAttr(SQL_ATTR_ROW_STATUS_PTR, (SQLPOINTER) statuses, 0, "S");
+	CHKSetStmtAttr(SQL_ATTR_ROWS_FETCHED_PTR, &num_row, 0, "S");
 
 	/* */
-	CHK(SQLExecDirect, (Statement, (SQLCHAR *) "SELECT i, c FROM #test", SQL_NTS));
+	CHKExecDirect((SQLCHAR *) "SELECT i, c FROM #test", SQL_NTS, "S");
 
 	/* bind some rows at a time */
-	CHK(SQLBindCol, (Statement, 1, SQL_C_ULONG, n, 0, n_len));
-	CHK(SQLBindCol, (Statement, 2, SQL_C_CHAR, c, C_LEN, c_len));
+	CHKBindCol(1, SQL_C_ULONG, n, 0, n_len, "S");
+	CHKBindCol(2, SQL_C_CHAR, c, C_LEN, c_len, "S");
 
 	for (i_test = 0; i_test < num_tests; ++i_test) {
 		const TEST *t = &tests[i_test];
 
 		printf("Test %d\n", i_test + 1);
 
-		retcode = SQLFetchScroll(Statement, t->type, t->irow);
-		if (retcode == SQL_SUCCESS) {
+		if (t->start == -1) {
+			CHKFetchScroll(t->type, t->irow, "No");
+		} else {
+			CHKFetchScroll(t->type, t->irow, "S");
+
 			if (t->start < 1) {
 				fprintf(stderr, "Rows not expected\n");
 				exit(1);
@@ -125,18 +109,11 @@ main(int argc, char *argv[])
 					exit(1);
 				}
 			}
-			continue;
 		}
-
-		if (retcode == SQL_NO_DATA && t->start == -1)
-			continue;
-
-		fprintf(stderr, "retcode = %d\n", retcode);
-		ODBC_REPORT_ERROR("SQLFetchScroll");
 	}
 
-	ResetStatement();
+	odbc_reset_statement();
 
-	Disconnect();
+	odbc_disconnect();
 	return 0;
 }

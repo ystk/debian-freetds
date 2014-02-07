@@ -1,6 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003  Brian Bruns
- * Copyright (C) 2004, 2005, 2006, 2007  Ziglio Frediano
+ * Copyright (C) 2004-2011  Ziglio Frediano
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -94,6 +94,10 @@
 #include <assert.h>
 
 #ifdef HAVE_GNUTLS
+#if defined(_THREAD_SAFE) && defined(TDS_HAVE_PTHREAD_MUTEX)
+#include "tdsthread.h"
+#include <gcrypt.h>
+#endif
 #include <gnutls/gnutls.h>
 #elif defined(HAVE_OPENSSL)
 #include <openssl/ssl.h>
@@ -103,23 +107,14 @@
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: net.c,v 1.71.2.1 2008/01/12 00:21:39 freddy77 Exp $");
+TDS_RCSID(var, "$Id: net.c,v 1.110.2.2 2011/08/12 11:50:17 freddy77 Exp $");
 
-#undef USE_POLL
-#if defined(HAVE_POLL_H) && defined(HAVE_POLL)
-# define USE_POLL 1
-# define TDSSELREAD  POLLIN
-# define TDSSELWRITE POLLOUT
+#define TDSSELREAD  POLLIN
+#define TDSSELWRITE POLLOUT
 /* error is always returned */
-# define TDSSELERR   0
-#else
-# define USE_POLL 0
-# define TDSSELREAD  1
-# define TDSSELWRITE 2
-# define TDSSELERR   4
-#endif
+#define TDSSELERR   0
 
-static int tds_select(TDSSOCKET * tds, unsigned tds_sel, int timeout_seconds);
+static int      tds_select(TDSSOCKET * tds, unsigned tds_sel, int timeout_seconds);
 
 
 /**
@@ -127,9 +122,9 @@ static int tds_select(TDSSOCKET * tds, unsigned tds_sel, int timeout_seconds);
  * @{ 
  */
 
-#ifdef WIN32
+#ifdef _WIN32
 int
-_tds_socket_init(void)
+tds_socket_init(void)
 {
 	WSADATA wsadata;
 
@@ -137,14 +132,18 @@ _tds_socket_init(void)
 }
 
 void
-_tds_socket_done(void)
+tds_socket_done(void)
 {
 	WSACleanup();
 }
 #endif
 
-#if !defined(SOL_TCP) && defined(IPPROTO_TCP)
-#define SOL_TCP IPPROTO_TCP
+#if !defined(SOL_TCP) && (defined(IPPROTO_TCP) || defined(_WIN32))
+/* fix incompatibility between MS headers */
+# ifndef IPPROTO_TCP
+#  define IPPROTO_TCP IPPROTO_TCP
+# endif
+# define SOL_TCP IPPROTO_TCP
 #endif
 
 /* Optimize the way we send packets */
@@ -173,35 +172,31 @@ _tds_socket_done(void)
 #define USE_NODELAY 1
 #endif
 
-#if !defined(WIN32)
+#if !defined(_WIN32)
 typedef unsigned int ioctl_nonblocking_t;
 #else
 typedef u_long ioctl_nonblocking_t;
 #endif
 
-int
-tds_open_socket(TDSSOCKET * tds, const char *ip_addr, unsigned int port, int timeout)
+TDSERRNO
+tds_open_socket(TDSSOCKET * tds, const char *ip_addr, unsigned int port, int timeout, int *p_oserr)
 {
 	struct sockaddr_in sin;
-#if !defined(DOS32X)
 	ioctl_nonblocking_t ioctl_nonblocking;
-	int retval;
-#endif
-	int len;
+	SOCKLEN_T optlen;
+	
+	int retval, len;
 	int tds_error = TDSECONN;
 	char ip[20];
-#if defined(DOS32X) || defined(WIN32)
-	int optlen;
-#else
-	socklen_t optlen;
-#endif
+
+	*p_oserr = 0;
 
 	memset(&sin, 0, sizeof(sin));
 
 	sin.sin_addr.s_addr = inet_addr(ip_addr);
 	if (sin.sin_addr.s_addr == INADDR_NONE) {
 		tdsdump_log(TDS_DBG_ERROR, "inet_addr() failed, IP = %s\n", ip_addr);
-		return TDS_FAIL;
+		return TDSESOCK;
 	}
 
 	sin.sin_family = AF_INET;
@@ -209,17 +204,26 @@ tds_open_socket(TDSSOCKET * tds, const char *ip_addr, unsigned int port, int tim
 
 	tdsdump_log(TDS_DBG_INFO1, "Connecting to %s port %d (TDS version %d.%d)\n", 
 			tds_inet_ntoa_r(sin.sin_addr, ip, sizeof(ip)), ntohs(sin.sin_port), 
-			tds->major_version, tds->minor_version);
+			TDS_MAJOR(tds), TDS_MINOR(tds));
 
 	if (TDS_IS_SOCKET_INVALID(tds->s = socket(AF_INET, SOCK_STREAM, 0))) {
-		tdserror(tds->tds_ctx, tds, TDSESOCK, 0);  
-		tdsdump_log(TDS_DBG_ERROR, "socket creation error: %s\n", strerror(sock_errno));
-		return TDS_FAIL;
+		*p_oserr = sock_errno;
+		tdsdump_log(TDS_DBG_ERROR, "socket creation error: %s\n", sock_strerror(sock_errno));
+		return TDSESOCK;
 	}
 
 #ifdef SO_KEEPALIVE
 	len = 1;
 	setsockopt(tds->s, SOL_SOCKET, SO_KEEPALIVE, (const void *) &len, sizeof(len));
+#endif
+
+#if defined(__APPLE__) && defined(SO_NOSIGPIPE)
+	len = 1;
+	if (setsockopt(tds->s, SOL_SOCKET, SO_NOSIGPIPE, (const void *) &len, sizeof(len))) {
+		*p_oserr = sock_errno;
+		tds_close_socket(tds);
+		return TDSESOCK;
+	}
 #endif
 
 	len = 1;
@@ -236,13 +240,13 @@ tds_open_socket(TDSSOCKET * tds, const char *ip_addr, unsigned int port, int tim
 	if (connect(tds->s, (struct sockaddr *) &sin, sizeof(sin)) < 0) {
 		char *message;
 
+		*p_oserr = sock_errno;
 		if (asprintf(&message, "tds_open_socket(): %s:%d", inet_ntoa(sin.sin_addr), ntohs(sin.sin_port)) >= 0) {
 			perror(message);
 			free(message);
 		}
 		tds_close_socket(tds);
-		tdserror(tds->tds_ctx, tds, TDSECONN, 0);
-		return TDS_FAIL;
+		return TDSECONN;
 	}
 #else
 	if (!timeout) {
@@ -253,17 +257,19 @@ tds_open_socket(TDSSOCKET * tds, const char *ip_addr, unsigned int port, int tim
 	/* enable non-blocking mode */
 	ioctl_nonblocking = 1;
 	if (IOCTLSOCKET(tds->s, FIONBIO, &ioctl_nonblocking) < 0) {
+		*p_oserr = sock_errno;
 		tds_close_socket(tds);
-		return TDS_FAIL;
+		return TDSEUSCT; 	/* close enough: "Unable to set communications timer" */
 	}
 
 	retval = connect(tds->s, (struct sockaddr *) &sin, sizeof(sin));
 	if (retval == 0) {
 		tdsdump_log(TDS_DBG_INFO2, "connection established\n");
 	} else {
-		tdsdump_log(TDS_DBG_ERROR, "tds_open_socket: connect(2) returned \"%s\"\n", strerror(sock_errno));
+		int err = *p_oserr = sock_errno;
+		tdsdump_log(TDS_DBG_ERROR, "tds_open_socket: connect(2) returned \"%s\"\n", sock_strerror(err));
 #if DEBUGGING_CONNECTING_PROBLEM
-		if (sock_errno != ECONNREFUSED && sock_errno != ENETUNREACH && sock_errno != EINPROGRESS) {
+		if (err != ECONNREFUSED && err != ENETUNREACH && err != TDSSOCK_EINPROGRESS) {
 			tdsdump_dump_buf(TDS_DBG_ERROR, "Contents of sockaddr_in", &sin, sizeof(sin));
 			tdsdump_log(TDS_DBG_ERROR, 	" sockaddr_in:\t"
 							      "%s = %x\n" 
@@ -277,38 +283,38 @@ tds_open_socket(TDSSOCKET * tds, const char *ip_addr, unsigned int port, int tim
 							);
 		}
 #endif
-		if (sock_errno != TDSSOCK_EINPROGRESS)
+		if (err != TDSSOCK_EINPROGRESS)
 			goto not_available;
 		
 		if (tds_select(tds, TDSSELWRITE|TDSSELERR, timeout) <= 0) {
-			tds_error = TDSESOCK;
+			tds_error = TDSECONN;
 			goto not_available;
 		}
 	}
-
-#endif
+#endif	/* not DOS32X */
 
 	/* check socket error */
 	optlen = sizeof(len);
 	len = 0;
-	if (getsockopt(tds->s, SOL_SOCKET, SO_ERROR, (char *) &len, &optlen) != 0) {
-		tdsdump_log(TDS_DBG_ERROR, "getsockopt(2) failed: %s\n", strerror(sock_errno));
+	if (tds_getsockopt(tds->s, SOL_SOCKET, SO_ERROR, (char *) &len, &optlen) != 0) {
+		*p_oserr = sock_errno;
+		tdsdump_log(TDS_DBG_ERROR, "getsockopt(2) failed: %s\n", sock_strerror(sock_errno));
 		goto not_available;
 	}
 	if (len != 0) {
-		tdsdump_log(TDS_DBG_ERROR, "getsockopt(2) reported: %s\n", strerror(len));
+		*p_oserr = len;
+		tdsdump_log(TDS_DBG_ERROR, "getsockopt(2) reported: %s\n", sock_strerror(len));
 		goto not_available;
 	}
 
 	tdsdump_log(TDS_DBG_ERROR, "tds_open_socket() succeeded\n");
-	return TDS_SUCCEED;
+	return TDSEOK;
 	
     not_available:
 	
 	tds_close_socket(tds);
-	tdserror(tds->tds_ctx, tds, tds_error, sock_errno);
 	tdsdump_log(TDS_DBG_ERROR, "tds_open_socket() failed\n");
-	return TDS_FAIL;
+	return tds_error;
 }
 
 int
@@ -317,11 +323,10 @@ tds_close_socket(TDSSOCKET * tds)
 	int rc = -1;
 
 	if (!IS_TDSDEAD(tds)) {
-		rc = CLOSESOCKET(tds->s);
+		if ((rc = CLOSESOCKET(tds->s)) == -1) 
+			tdserror(tds->tds_ctx, tds,  TDSECLOS, sock_errno);
 		tds->s = INVALID_SOCKET;
 		tds_set_state(tds, TDS_DEAD);
-		if (-1 == rc) 
-			tdserror(tds->tds_ctx, tds,  TDSECLOS, sock_errno);
 	}
 	return rc;
 }
@@ -339,34 +344,11 @@ tds_select(TDSSOCKET * tds, unsigned tds_sel, int timeout_seconds)
 {
 	int rc, seconds;
 	unsigned int poll_seconds;
-#if !USE_POLL
-	fd_set fds[3];
-	fd_set *readfds = NULL, *writefds = NULL, *exceptfds = NULL;
-#endif
+	static const char method[] = "poll(2)";
 
 	assert(tds != NULL);
 	assert(timeout_seconds >= 0);
 
-#if !USE_POLL
-#if !defined(WIN32) && defined(FD_SETSIZE)
-	if (tds->s >= FD_SETSIZE) {
-		sock_errno = EINVAL;
-		return -1;
-	}
-#endif
-	if ((tds_sel & TDSSELREAD) != 0) {
-		FD_ZERO(&fds[0]);
-		readfds = &fds[0];
-	}
-	if ((tds_sel & TDSSELWRITE) != 0) {
-		FD_ZERO(&fds[1]);
-		writefds = &fds[1];
-	}
-	if ((tds_sel & TDSSELERR) != 0) {
-		FD_ZERO(&fds[2]);
-		exceptfds = &fds[2];
-	}
-#endif
 
 	/* 
 	 * The select loop.  
@@ -385,7 +367,6 @@ tds_select(TDSSOCKET * tds, unsigned tds_sel, int timeout_seconds)
 	 */
 	poll_seconds = (tds->tds_ctx && tds->tds_ctx->int_handler)? 1 : timeout_seconds;
 	for (seconds = timeout_seconds; timeout_seconds == 0 || seconds > 0; seconds -= poll_seconds) {
-#if USE_POLL
 		struct pollfd fd;
 		int timeout = poll_seconds ? poll_seconds * 1000 : -1;
 
@@ -393,20 +374,6 @@ tds_select(TDSSOCKET * tds, unsigned tds_sel, int timeout_seconds)
 		fd.events = tds_sel;
 		fd.revents = 0;
 		rc = poll(&fd, 1, timeout);
-#else
-		struct timeval tv, *ptv = poll_seconds? &tv : NULL;
-		tv.tv_sec = poll_seconds;
-		tv.tv_usec = 0; 
-
-		if (readfds)
-			FD_SET(tds->s, readfds);
-		if (writefds)
-			FD_SET(tds->s, writefds);
-		if (exceptfds)
-			FD_SET(tds->s, exceptfds);
-
-		rc = select(tds->s + 1, readfds, writefds, exceptfds, ptv); 
-#endif
 
 		if (rc > 0 ) {
 			return rc;
@@ -417,8 +384,8 @@ tds_select(TDSSOCKET * tds, unsigned tds_sel, int timeout_seconds)
 			case TDSSOCK_EINTR:
 				break;	/* let interrupt handler be called */
 			default: /* documented: EFAULT, EBADF, EINVAL */
-				tdsdump_log(TDS_DBG_ERROR, "error: select(2) returned 0x%x, \"%s\"\n", 
-						sock_errno, strerror(sock_errno));
+				tdsdump_log(TDS_DBG_ERROR, "error: %s returned %d, \"%s\"\n", 
+						method, sock_errno, sock_strerror(sock_errno));
 				return rc;
 			}
 		}
@@ -448,8 +415,7 @@ tds_select(TDSSOCKET * tds, unsigned tds_sel, int timeout_seconds)
 			default:
 				tdsdump_log(TDS_DBG_NETWORK, 
 					"tds_select: invalid interupt handler return code: %d\n", timeout_action);
-				exit(EXIT_FAILURE);
-				break;
+				return -1;
 			}
 		}
 		/* 
@@ -465,15 +431,14 @@ tds_select(TDSSOCKET * tds, unsigned tds_sel, int timeout_seconds)
 /**
  * Loops until we have received buflen characters
  * return -1 on failure
- * This function does not close the socket.  Maybe it should.  
  */
 static int
 tds_goodread(TDSSOCKET * tds, unsigned char *buf, int buflen, unsigned char unfinished)
 {
 	int rc, got = 0;
 
-	if (buf == NULL || buflen < 1 || tds == NULL)
-		return 0;
+	if (tds == NULL || buf == NULL || buflen < 1)
+		return -1;
 
 	for (;;) {
 		int len;
@@ -482,12 +447,10 @@ tds_goodread(TDSSOCKET * tds, unsigned char *buf, int buflen, unsigned char unfi
 			return -1;
 
 		if ((len = tds_select(tds, TDSSELREAD, tds->query_timeout)) > 0) {
-#ifndef MSG_NOSIGNAL
+
 			len = READSOCKET(tds->s, buf + got, buflen);
-#else
-			len = recv(tds->s, buf + got, buflen, MSG_NOSIGNAL);
-#endif
-			if (len < 0 && sock_errno == EAGAIN)
+
+			if (len < 0 && TDSSOCK_WOULDBLOCK(sock_errno))
 				continue;
 			/* detect connection close */
 			if (len <= 0) {
@@ -496,7 +459,7 @@ tds_goodread(TDSSOCKET * tds, unsigned char *buf, int buflen, unsigned char unfi
 				return -1;
 			}
 		} else if (len < 0) {
-			if (sock_errno == EAGAIN) /* shouldn't happen, but OK */
+			if (TDSSOCK_WOULDBLOCK(sock_errno)) /* shouldn't happen, but OK */
 				continue;
 			tdserror(tds->tds_ctx, tds, TDSEREAD, sock_errno);
 			tds_close_socket(tds);
@@ -573,7 +536,7 @@ tds_read_packet(TDSSOCKET * tds)
 			tds->in_pos = 0;
 			return -1;
 		}
-
+		
 		/* GW ADDED */
 		/*
 		 * Not sure if this is the best way to do the error
@@ -583,43 +546,21 @@ tds_read_packet(TDSSOCKET * tds)
 
 		tds->in_len = 0;
 		tds->in_pos = 0;
-		tds->last_packet = 1;
 		if (tds->state != TDS_IDLE && len == 0) {
 			tds_close_socket(tds);
 		}
 		return -1;
 	}
-	tdsdump_dump_buf(TDS_DBG_NETWORK, "Received header", header, sizeof(header));
 
-#if 0
-	/*
-	 * Note:
-	 * this was done by Gregg, I don't think its the real solution (it breaks
-	 * under 5.0, but I haven't gotten a result big enough to test this yet.
- 	 */
-	if (IS_TDS42(tds)) {
-		if (header[0] != 0x04 && header[0] != 0x0f) {
-			tdsdump_log(TDS_DBG_ERROR, "Invalid packet header %d\n", header[0]);
-			/*
-			 * Not sure if this is the best way to do the error 
-			 * handling here but this is the way it is currently 
-			 * being done.
-			 */
-			tds->in_len = 0;
-			tds->in_pos = 0;
-			tds->last_packet = 1;
-			return (-1);
-		}
-	}
-#endif
+	tdsdump_dump_buf(TDS_DBG_HEADER, "Received header", header, sizeof(header));	
 
 	/* Convert our packet length from network to host byte order */
-	len = ((((unsigned int) header[2]) << 8) | header[3]) - 8;
+	len = (((unsigned int) header[2]) << 8) | header[3];
 
 	/*
 	 * If this packet size is the largest we have gotten allocate space for it
 	 */
-	if (len > tds->in_buf_max) {
+	if ((unsigned int)len > tds->in_buf_max) {
 		unsigned char *p;
 
 		if (!tds->in_buf) {
@@ -638,9 +579,10 @@ tds_read_packet(TDSSOCKET * tds)
 
 	/* Clean out the in_buf so we don't use old stuff by mistake */
 	memset(tds->in_buf, 0, tds->in_buf_max);
+	memcpy(tds->in_buf, header, 8);
 
 	/* Now get exactly how many bytes the server told us to get */
-	have = 0;
+	have = 8;
 	while (have < len) {
 		int nbytes = goodread(tds, tds->in_buf + have, len - have);
 		if (nbytes < 1) {
@@ -652,69 +594,87 @@ tds_read_packet(TDSSOCKET * tds)
 			/* no need to call tdserror(), because goodread() already did */
 			tds->in_len = 0;
 			tds->in_pos = 0;
-			tds->last_packet = 1;
 			tds_close_socket(tds);
 			return -1;
 		}
 		have += nbytes;
 	}
 
-	/* Set the last packet flag */
-	tds->last_packet = (header[1] != 0);
-
 	/* set the received packet type flag */
 	tds->in_flag = header[0];
 
 	/* Set the length and pos (not sure what pos is used for now */
 	tds->in_len = have;
-	tds->in_pos = 0;
+	tds->in_pos = 8;
 	tdsdump_dump_buf(TDS_DBG_NETWORK, "Received packet", tds->in_buf, tds->in_len);
 
 	return (tds->in_len);
 }
 
+int
+tds_lastpacket(TDSSOCKET * tds) 
+{
+	if (!tds || !tds->in_buf || tds->in_buf_max < 2)
+		return 1;
+	
+	return tds->in_buf[1] != 0;
+}
+
 /**
  * \param tds the famous socket
- * \param p pointer to buffer
+ * \param buffer data to send
  * \param len bytes in buffer
  * \param last 1 if this is the last packet, else 0
  * \return len on success, <0 on failure
  */
 static int
-tds_goodwrite(TDSSOCKET * tds, const unsigned char *p, int len, unsigned char last)
+tds_goodwrite(TDSSOCKET * tds, const unsigned char *buffer, size_t len, unsigned char last)
 {
-	int remaining = len;
-	int nput, rc, err=0;
+	const unsigned char *p = buffer;
+	int rc;
+
+	assert(tds && buffer);
 
 	/* Fix of SIGSEGV when FD_SET() called with negative fd (Sergey A. Cherukhin, 23/09/2005) */
 	if (TDS_IS_SOCKET_INVALID(tds->s))
 		return -1;
 
-	while (remaining > 0) {
+	while (p - buffer < len) {
 		if ((rc = tds_select(tds, TDSSELWRITE, tds->query_timeout)) > 0) {
+			int err;
+			size_t remaining = len - (p - buffer);
 #ifdef USE_MSGMORE
-			nput = send(tds->s, p, remaining, last ? MSG_NOSIGNAL : MSG_NOSIGNAL|MSG_MORE);
+			ssize_t nput = send(tds->s, p, remaining, last ? MSG_NOSIGNAL : MSG_NOSIGNAL|MSG_MORE);
 			/* In case the kernel does not support MSG_MORE, try again without it */
 			if (nput < 0 && errno == EINVAL && !last)
 				nput = send(tds->s, p, remaining, MSG_NOSIGNAL);
-#elif !defined(MSG_NOSIGNAL)
-			nput = WRITESOCKET(tds->s, p, remaining);
+#elif defined(__APPLE__) && defined(SO_NOSIGPIPE)
+			ssize_t nput = send(tds->s, p, remaining, 0);
 #else
-			nput = send(tds->s, p, remaining, MSG_NOSIGNAL);
+			ssize_t nput = WRITESOCKET(tds->s, p, remaining);
 #endif
-			if (nput < 0 && sock_errno == EAGAIN)
+			if (nput > 0) {
+				p += nput;
 				continue;
-			/* detect connection close */
-			if (nput <= 0) {
-				tdserror(tds->tds_ctx, tds, nput == 0 ? TDSESEOF : TDSEWRIT, sock_errno);
-				tds_close_socket(tds);
-				return -1;
 			}
-		} else if (rc < 0) {
-			if (sock_errno == EAGAIN) /* shouldn't happen, but OK, retry */
+
+			err = sock_errno;
+			if (0 == nput || TDSSOCK_WOULDBLOCK(err))
 				continue;
-			tdsdump_log(TDS_DBG_NETWORK, "TDS: Write failed in tds_write_packet\nError: %d (%s)\n", err, strerror(err));
-			tdserror(tds->tds_ctx, tds, TDSEWRIT, sock_errno);
+
+			assert(nput < 0);
+
+			tdsdump_log(TDS_DBG_NETWORK, "send(2) failed: %d (%s)\n", err, sock_strerror(err));
+			tdserror(tds->tds_ctx, tds, TDSEWRIT, err);
+			tds_close_socket(tds);
+			return -1;
+
+		} else if (rc < 0) {
+			int err = sock_errno;
+			if (TDSSOCK_WOULDBLOCK(err)) /* shouldn't happen, but OK, retry */
+				continue;
+			tdsdump_log(TDS_DBG_NETWORK, "select(2) failed: %d (%s)\n", err, sock_strerror(err));
+			tdserror(tds->tds_ctx, tds, TDSEWRIT, err);
 			tds_close_socket(tds);
 			return -1;
 		} else { /* timeout */
@@ -723,9 +683,13 @@ tds_goodwrite(TDSSOCKET * tds, const unsigned char *p, int len, unsigned char la
 			case TDS_INT_CONTINUE:
 				continue;
 			case TDS_INT_TIMEOUT:
-				/* FIXME we are not able to send a packet and we want to send a packet ?? */
+				/* 
+				 * "Cancel the operation ... but leave the dbproc in working condition." 
+				 * We must try to send the cancel packet, else we have to abandon the dbproc.  
+				 * If it can't be done, a harder error e.g. ECONNRESET will bubble up.  
+				 */
 				tds_send_cancel(tds);
-				continue; /* fixme: or return? */
+				continue; 
 			default:
 			case TDS_INT_CANCEL:
 				tds_close_socket(tds);
@@ -733,9 +697,7 @@ tds_goodwrite(TDSSOCKET * tds, const unsigned char *p, int len, unsigned char la
 			}
 			assert(0); /* not reached */
 		}
-
-		p += nput;
-		remaining -= nput;
+		assert(0); /* not reached */
 	}
 
 #ifdef USE_CORK
@@ -758,7 +720,7 @@ tds_write_packet(TDSSOCKET * tds, unsigned char final)
 	int sent;
 	unsigned int left = 0;
 
-#if !defined(WIN32) && !defined(MSG_NOSIGNAL) && !defined(DOS32X)
+#if !defined(_WIN32) && !defined(MSG_NOSIGNAL) && !defined(DOS32X) && (!defined(__APPLE__) || !defined(SO_NOSIGPIPE))
 	void (*oldsig) (int);
 #endif
 
@@ -778,7 +740,7 @@ tds_write_packet(TDSSOCKET * tds, unsigned char final)
 
 	tdsdump_dump_buf(TDS_DBG_NETWORK, "Sending packet", tds->out_buf, tds->out_pos);
 
-#if !defined(WIN32) && !defined(MSG_NOSIGNAL) && !defined(DOS32X)
+#if !defined(_WIN32) && !defined(MSG_NOSIGNAL) && !defined(DOS32X) && (!defined(__APPLE__) || !defined(SO_NOSIGPIPE))
 	oldsig = signal(SIGPIPE, SIG_IGN);
 	if (oldsig == SIG_ERR) {
 		tdsdump_log(TDS_DBG_WARN, "TDS: Warning: Couldn't set SIGPIPE signal to be ignored\n");
@@ -796,7 +758,7 @@ tds_write_packet(TDSSOCKET * tds, unsigned char final)
 #endif
 		sent = tds_goodwrite(tds, tds->out_buf, tds->out_pos, final);
 
-#if !defined(WIN32) && !defined(MSG_NOSIGNAL) && !defined(DOS32X)
+#if !defined(_WIN32) && !defined(MSG_NOSIGNAL) && !defined(DOS32X) && (!defined(__APPLE__) || !defined(SO_NOSIGPIPE))
 	if (signal(SIGPIPE, oldsig) == SIG_ERR) {
 		tdsdump_log(TDS_DBG_WARN, "TDS: Warning: Couldn't reset SIGPIPE signal to previous value\n");
 	}
@@ -812,6 +774,147 @@ tds_write_packet(TDSSOCKET * tds, unsigned char final)
 }
 
 /**
+ * Get port of all instances
+ * @return default port number or 0 if error
+ * @remark experimental, cf. MC-SQLR.pdf.
+ */
+int
+tds7_get_instance_ports(FILE *output, const char *ip_addr)
+{
+	int num_try;
+	struct sockaddr_in sin;
+	ioctl_nonblocking_t ioctl_nonblocking;
+	struct pollfd fd;
+	int retval;
+	TDS_SYS_SOCKET s;
+	char msg[16*1024];
+	size_t msg_len = 0;
+	int port = 0;
+
+	tdsdump_log(TDS_DBG_ERROR, "tds7_get_instance_ports(%s)\n", ip_addr);
+
+	sin.sin_addr.s_addr = inet_addr(ip_addr);
+	if (sin.sin_addr.s_addr == INADDR_NONE) {
+		tdsdump_log(TDS_DBG_ERROR, "inet_addr() failed, IP = %s\n", ip_addr);
+		return 0;
+	}
+
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons(1434);
+
+	/* create an UDP socket */
+	if (TDS_IS_SOCKET_INVALID(s = socket(AF_INET, SOCK_DGRAM, 0))) {
+		tdsdump_log(TDS_DBG_ERROR, "socket creation error: %s\n", sock_strerror(sock_errno));
+		return 0;
+	}
+
+	/*
+	 * on cluster environment is possible that reply packet came from
+	 * different IP so do not filter by ip with connect
+	 */
+
+	ioctl_nonblocking = 1;
+	if (IOCTLSOCKET(s, FIONBIO, &ioctl_nonblocking) < 0) {
+		CLOSESOCKET(s);
+		return 0;
+	}
+
+	/* 
+	 * Request the instance's port from the server.  
+	 * There is no easy way to detect if port is closed so we always try to
+	 * get a reply from server 16 times. 
+	 */
+	for (num_try = 0; num_try < 16 && msg_len == 0; ++num_try) {
+		/* send the request */
+		msg[0] = 3;
+		sendto(s, msg, 1, 0, (struct sockaddr *) &sin, sizeof(sin));
+
+		fd.fd = s;
+		fd.events = POLLIN;
+		fd.revents = 0;
+
+		retval = poll(&fd, 1, 1000);
+		
+		/* on interrupt ignore */
+		if (retval < 0 && sock_errno == TDSSOCK_EINTR)
+			continue;
+		
+		if (retval == 0) { /* timed out */
+#if 1
+			tdsdump_log(TDS_DBG_ERROR, "tds7_get_instance_port: timed out on try %d of 16\n", num_try);
+			continue;
+#else
+			int rc;
+			tdsdump_log(TDS_DBG_INFO1, "timed out\n");
+
+			switch(rc = tdserror(NULL, NULL, TDSETIME, 0)) {
+			case TDS_INT_CONTINUE:
+				continue;	/* try again */
+
+			default:
+				tdsdump_log(TDS_DBG_ERROR, "error: client error handler returned %d\n", rc);
+			case TDS_INT_CANCEL: 
+				CLOSESOCKET(s);
+				return 0;
+			}
+#endif
+		}
+		if (retval < 0)
+			break;
+
+		/* got data, read and parse */
+		if ((msg_len = recv(s, msg, sizeof(msg) - 1, 0)) > 3 && msg[0] == 5) {
+			char *name, sep[2] = ";", *save;
+
+			/* assure null terminated */
+			msg[msg_len] = 0;
+			tdsdump_dump_buf(TDS_DBG_INFO1, "instance info", msg, msg_len);
+			
+			if (0) {	/* To debug, print the whole string. */
+				char *p;
+
+				for (*sep = '\n', p=msg+3; p < msg + msg_len; p++) {
+					if( *p == ';' )
+						*p = *sep;
+				}
+				fputs(msg + 3, output);
+			}
+
+			/*
+			 * Parse and print message.
+			 */
+			name = strtok_r(msg+3, sep, &save);
+			while (name && output) {
+				int i;
+				static const char *names[] = { "ServerName", "InstanceName", "IsClustered", "Version", 
+							       "tcp", "np", "via" };
+
+				for (i=0; name && i < TDS_VECTOR_SIZE(names); i++) {
+					const char *value = strtok_r(NULL, sep, &save);
+					
+					if (strcmp(name, names[i]) != 0)
+						fprintf(output, "error: expecting '%s', found '%s'\n", names[i], name);
+					if (value) 
+						fprintf(output, "%15s %s\n", name, value);
+					else 
+						break;
+
+					name = strtok_r(NULL, sep, &save);
+
+					if (name && strcmp(name, names[0]) == 0)
+						break;
+				}
+				if (name) 
+					fprintf(output, "\n");
+			}
+		}
+	}
+	CLOSESOCKET(s);
+	tdsdump_log(TDS_DBG_ERROR, "default instance port is %d\n", port);
+	return port;
+}
+
+/**
  * Get port of given instance
  * @return port number or 0 if error
  */
@@ -821,12 +924,7 @@ tds7_get_instance_port(const char *ip_addr, const char *instance)
 	int num_try;
 	struct sockaddr_in sin;
 	ioctl_nonblocking_t ioctl_nonblocking;
-#if USE_POLL
 	struct pollfd fd;
-#else
-	struct timeval selecttimeout;
-	fd_set fds;
-#endif
 	int retval;
 	TDS_SYS_SOCKET s;
 	char msg[1024];
@@ -846,18 +944,9 @@ tds7_get_instance_port(const char *ip_addr, const char *instance)
 
 	/* create an UDP socket */
 	if (TDS_IS_SOCKET_INVALID(s = socket(AF_INET, SOCK_DGRAM, 0))) {
-		tdsdump_log(TDS_DBG_ERROR, "socket creation error: %s\n", strerror(sock_errno));
+		tdsdump_log(TDS_DBG_ERROR, "socket creation error: %s\n", sock_strerror(sock_errno));
 		return 0;
 	}
-
-#if !USE_POLL
-#if !defined(WIN32) && defined(FD_SETSIZE)
-	if (s >= FD_SETSIZE) {
-		sock_errno = EINVAL;
-		return 0;
-	}
-#endif
-#endif
 
 	/*
 	 * on cluster environment is possible that reply packet came from
@@ -879,22 +968,13 @@ tds7_get_instance_port(const char *ip_addr, const char *instance)
 		/* send the request */
 		msg[0] = 4;
 		tds_strlcpy(msg + 1, instance, sizeof(msg) - 1);
-		sendto(s, msg, strlen(msg) + 1, 0, (struct sockaddr *) &sin, sizeof(sin));
+		sendto(s, msg, (int)strlen(msg) + 1, 0, (struct sockaddr *) &sin, sizeof(sin));
 
-#if USE_POLL
 		fd.fd = s;
 		fd.events = POLLIN;
 		fd.revents = 0;
 
 		retval = poll(&fd, 1, 1000);
-#else
-		FD_ZERO(&fds);
-		FD_SET(s, &fds);
-		selecttimeout.tv_sec = 1;
-		selecttimeout.tv_usec = 0;
-		
-		retval = select(s + 1, &fds, NULL, NULL, &selecttimeout);
-#endif
 		
 		/* on interrupt ignore */
 		if (retval < 0 && sock_errno == TDSSOCK_EINTR)
@@ -948,11 +1028,14 @@ tds7_get_instance_port(const char *ip_addr, const char *instance)
 					break;
 				*p++ = 0;
 
-				value = p;
-				p = strchr(p, ';');
-				if (!p)
-					break;
-				*p++ = 0;
+				value = name;
+				if (*name) {
+					value = p;
+					p = strchr(p, ';');
+					if (!p)
+						break;
+					*p++ = 0;
+				}
 
 				if (strcasecmp(name, "InstanceName") == 0) {
 					if (strcasecmp(value, instance) != 0)
@@ -974,6 +1057,128 @@ tds7_get_instance_port(const char *ip_addr, const char *instance)
 	tdsdump_log(TDS_DBG_ERROR, "instance port is %d\n", port);
 	return port;
 }
+
+#if defined(_WIN32)
+const char *
+tds_prwsaerror( int erc ) 
+{
+	switch(erc) {
+	case WSAEINTR: /* 10004 */
+		return "WSAEINTR: Interrupted function call.";
+	case WSAEACCES: /* 10013 */
+		return "WSAEACCES: Permission denied.";
+	case WSAEFAULT: /* 10014 */
+		return "WSAEFAULT: Bad address.";
+	case WSAEINVAL: /* 10022 */
+		return "WSAEINVAL: Invalid argument.";
+	case WSAEMFILE: /* 10024 */
+		return "WSAEMFILE: Too many open files.";
+	case WSAEWOULDBLOCK: /* 10035 */
+		return "WSAEWOULDBLOCK: Resource temporarily unavailable.";
+	case WSAEINPROGRESS: /* 10036 */
+		return "WSAEINPROGRESS: Operation now in progress.";
+	case WSAEALREADY: /* 10037 */
+		return "WSAEALREADY: Operation already in progress.";
+	case WSAENOTSOCK: /* 10038 */
+		return "WSAENOTSOCK: Socket operation on nonsocket.";
+	case WSAEDESTADDRREQ: /* 10039 */
+		return "WSAEDESTADDRREQ: Destination address required.";
+	case WSAEMSGSIZE: /* 10040 */
+		return "WSAEMSGSIZE: Message too long.";
+	case WSAEPROTOTYPE: /* 10041 */
+		return "WSAEPROTOTYPE: Protocol wrong type for socket.";
+	case WSAENOPROTOOPT: /* 10042 */
+		return "WSAENOPROTOOPT: Bad protocol option.";
+	case WSAEPROTONOSUPPORT: /* 10043 */
+		return "WSAEPROTONOSUPPORT: Protocol not supported.";
+	case WSAESOCKTNOSUPPORT: /* 10044 */
+		return "WSAESOCKTNOSUPPORT: Socket type not supported.";
+	case WSAEOPNOTSUPP: /* 10045 */
+		return "WSAEOPNOTSUPP: Operation not supported.";
+	case WSAEPFNOSUPPORT: /* 10046 */
+		return "WSAEPFNOSUPPORT: Protocol family not supported.";
+	case WSAEAFNOSUPPORT: /* 10047 */
+		return "WSAEAFNOSUPPORT: Address family not supported by protocol family.";
+	case WSAEADDRINUSE: /* 10048 */
+		return "WSAEADDRINUSE: Address already in use.";
+	case WSAEADDRNOTAVAIL: /* 10049 */
+		return "WSAEADDRNOTAVAIL: Cannot assign requested address.";
+	case WSAENETDOWN: /* 10050 */
+		return "WSAENETDOWN: Network is down.";
+	case WSAENETUNREACH: /* 10051 */
+		return "WSAENETUNREACH: Network is unreachable.";
+	case WSAENETRESET: /* 10052 */
+		return "WSAENETRESET: Network dropped connection on reset.";
+	case WSAECONNABORTED: /* 10053 */
+		return "WSAECONNABORTED: Software caused connection abort.";
+	case WSAECONNRESET: /* 10054 */
+		return "WSAECONNRESET: Connection reset by peer.";
+	case WSAENOBUFS: /* 10055 */
+		return "WSAENOBUFS: No buffer space available.";
+	case WSAEISCONN: /* 10056 */
+		return "WSAEISCONN: Socket is already connected.";
+	case WSAENOTCONN: /* 10057 */
+		return "WSAENOTCONN: Socket is not connected.";
+	case WSAESHUTDOWN: /* 10058 */
+		return "WSAESHUTDOWN: Cannot send after socket shutdown.";
+	case WSAETIMEDOUT: /* 10060 */
+		return "WSAETIMEDOUT: Connection timed out.";
+	case WSAECONNREFUSED: /* 10061 */
+		return "WSAECONNREFUSED: Connection refused.";
+	case WSAEHOSTDOWN: /* 10064 */
+		return "WSAEHOSTDOWN: Host is down.";
+	case WSAEHOSTUNREACH: /* 10065 */
+		return "WSAEHOSTUNREACH: No route to host.";
+	case WSAEPROCLIM: /* 10067 */
+		return "WSAEPROCLIM: Too many processes.";
+	case WSASYSNOTREADY: /* 10091 */
+		return "WSASYSNOTREADY: Network subsystem is unavailable.";
+	case WSAVERNOTSUPPORTED: /* 10092 */
+		return "WSAVERNOTSUPPORTED: Winsock.dll version out of range.";
+	case WSANOTINITIALISED: /* 10093 */
+		return "WSANOTINITIALISED: Successful WSAStartup not yet performed.";
+	case WSAEDISCON: /* 10101 */
+		return "WSAEDISCON: Graceful shutdown in progress.";
+	case WSATYPE_NOT_FOUND: /* 10109 */
+		return "WSATYPE_NOT_FOUND: Class type not found.";
+	case WSAHOST_NOT_FOUND: /* 11001 */
+		return "WSAHOST_NOT_FOUND: Host not found.";
+	case WSATRY_AGAIN: /* 11002 */
+		return "WSATRY_AGAIN: Nonauthoritative host not found.";
+	case WSANO_RECOVERY: /* 11003 */
+		return "WSANO_RECOVERY: This is a nonrecoverable error.";
+	case WSANO_DATA: /* 11004 */
+		return "WSANO_DATA: Valid name, no data record of requested type.";
+	case WSA_INVALID_HANDLE: /* OS dependent */
+		return "WSA_INVALID_HANDLE: Specified event object handle is invalid.";
+	case WSA_INVALID_PARAMETER: /* OS dependent */
+		return "WSA_INVALID_PARAMETER: One or more parameters are invalid.";
+	case WSA_IO_INCOMPLETE: /* OS dependent */
+		return "WSA_IO_INCOMPLETE: Overlapped I/O event object not in signaled state.";
+	case WSA_IO_PENDING: /* OS dependent */
+		return "WSA_IO_PENDING: Overlapped operations will complete later.";
+	case WSA_NOT_ENOUGH_MEMORY: /* OS dependent */
+		return "WSA_NOT_ENOUGH_MEMORY: Insufficient memory available.";
+	case WSA_OPERATION_ABORTED: /* OS dependent */
+		return "WSA_OPERATION_ABORTED: Overlapped operation aborted.";
+#if defined(WSAINVALIDPROCTABLE)
+	case WSAINVALIDPROCTABLE: /* OS dependent */
+		return "WSAINVALIDPROCTABLE: Invalid procedure table from service provider.";
+#endif
+#if defined(WSAINVALIDPROVIDER)
+	case WSAINVALIDPROVIDER: /* OS dependent */
+		return "WSAINVALIDPROVIDER: Invalid service provider version number.";
+#endif
+#if defined(WSAPROVIDERFAILEDINIT)
+	case WSAPROVIDERFAILEDINIT: /* OS dependent */
+		return "WSAPROVIDERFAILEDINIT: Unable to initialize a service provider.";
+#endif
+	case WSASYSCALLFAILURE: /* OS dependent */
+		return "WSASYSCALLFAILURE: System call failure.";
+	}
+	return "undocumented WSA error code";
+}
+#endif
 
 #if defined(HAVE_GNUTLS) || defined(HAVE_OPENSSL)
 
@@ -1036,8 +1241,10 @@ tds_ssl_write(BIO *b, const char* data, int len)
 
 	if (tds->tls_session) {
 		/* write to socket directly */
-		return tds_goodwrite(tds, data, len, 1);
+		/* TODO use cork if available here to flush only on last chunk of packet ?? */
+		return tds_goodwrite(tds, data, len, tds->out_buf[1]);
 	}
+	/* write crypted data inside normal TDS packets */
 	tds_put_n(tds, data, len);
 	return len;
 }
@@ -1059,6 +1266,13 @@ tds_tls_deinit(void)
 	if (tls_initialized)
 		gnutls_global_deinit();
 }
+#endif
+
+#if defined(_THREAD_SAFE) && defined(TDS_HAVE_PTHREAD_MUTEX)
+GCRY_THREAD_OPTION_PTHREAD_IMPL;
+#define tds_gcry_init() gcry_control(GCRYCTL_SET_THREAD_CBS, &gcry_threads_pthread)
+#else
+#define tds_gcry_init() do {} while(0)
 #endif
 
 int
@@ -1094,8 +1308,10 @@ tds_ssl_init(TDSSOCKET *tds)
 
 	/* FIXME place somewhere else, deinit at end */
 	ret = 0;
-	if (!tls_initialized)
+	if (!tls_initialized) {
+		tds_gcry_init();
 		ret = gnutls_global_init();
+	}
 	if (ret == 0) {
 		tls_initialized = 1;
 
@@ -1126,7 +1342,11 @@ tds_ssl_init(TDSSOCKET *tds)
 		gnutls_compression_set_priority(session, comp_priority);
 		gnutls_kx_set_priority(session, kx_priority);
 		gnutls_mac_set_priority(session, mac_priority);
-		
+		/* mssql does not like padding too much */
+#ifdef HAVE_GNUTLS_RECORD_DISABLE_PADDING
+		gnutls_record_disable_padding(session);
+#endif
+
 		/* put the anonymous credentials to the current session */
 		tls_msg = "setting credential";
 		ret = gnutls_credentials_set(session, GNUTLS_CRD_CERTIFICATE, xcred);
@@ -1233,13 +1453,11 @@ int
 tds_ssl_init(TDSSOCKET *tds)
 {
 #define OPENSSL_CIPHERS \
-	SSL3_TXT_RSA_DES_64_CBC_SHA " " \
-	TLS1_TXT_RSA_EXPORT1024_WITH_RC4_56_SHA " " \
-	TLS1_TXT_RSA_EXPORT1024_WITH_DES_CBC_SHA " " \
-	SSL3_TXT_RSA_RC4_40_MD5 " " \
-	SSL3_TXT_RSA_RC2_40_MD5 " " \
-	SSL3_TXT_EDH_DSS_DES_64_CBC_SHA " " \
-	TLS1_TXT_DHE_DSS_EXPORT1024_WITH_DES_CBC_SHA
+	"DHE-RSA-AES256-SHA DHE-DSS-AES256-SHA " \
+	"AES256-SHA EDH-RSA-DES-CBC3-SHA " \
+	"EDH-DSS-DES-CBC3-SHA DES-CBC3-SHA " \
+	"DES-CBC3-MD5 DHE-RSA-AES128-SHA " \
+	"DHE-DSS-AES128-SHA AES128-SHA RC2-CBC-MD5 RC4-SHA RC4-MD5"
 
 	SSL *con;
 	BIO *b;
@@ -1277,6 +1495,11 @@ tds_ssl_init(TDSSOCKET *tds)
 
 		/* use priorities... */
 		SSL_set_cipher_list(con, OPENSSL_CIPHERS);
+
+#ifdef SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS
+		/* this disable a security improvement but allow connection... */
+		SSL_set_options(con, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
+#endif
 
 		/* Perform the TLS handshake */
 		tls_msg = "handshake";

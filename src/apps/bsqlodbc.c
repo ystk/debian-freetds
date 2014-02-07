@@ -45,12 +45,16 @@
 #include <libgen.h>
 #endif
 
+#if HAVE_LOCALE_H
+#include <locale.h>
+#endif
+
 #include "tds_sysdep_public.h"
 #include <sql.h>
 #include <sqlext.h>
 #include "replacements.h"
 
-static char software_version[] = "$Id: bsqlodbc.c,v 1.9.2.1 2008/02/12 15:41:51 freddy77 Exp $";
+static char software_version[] = "$Id: bsqlodbc.c,v 1.17 2010/07/22 09:55:37 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 static char * next_query(void);
@@ -69,6 +73,7 @@ struct METADATA
 	char *name, *format_string;
 	const char *source;
 	SQLSMALLINT type;
+	SQLINTEGER nchars;
 	SQLULEN size, width;
 };
 struct DATA { char *buffer; SQLLEN len; int status; };
@@ -79,6 +84,7 @@ typedef struct _options
 { 
 	int 	fverbose, 
 		fquiet;
+	size_t	odbc_version;
 	FILE 	*headers, 
 		*verbose;
 	char 	*servername, 
@@ -221,6 +227,8 @@ main(int argc, char *argv[])
 	SQLRETURN erc;
 	const char *sql;
 
+	setlocale(LC_ALL, "");
+
 	memset(&options, 0, sizeof(options));
 	options.headers = stderr;
 	login = get_login(argc, argv, &options); /* get command-line parameters and call dblogin() */
@@ -273,7 +281,7 @@ main(int argc, char *argv[])
 	}
 	assert(hEnv);
 
-	if ((erc = SQLSetEnvAttr(hEnv, SQL_ATTR_ODBC_VERSION, (SQLPOINTER) SQL_OV_ODBC3, SQL_IS_UINTEGER)) != SQL_SUCCESS) {
+	if ((erc = SQLSetEnvAttr(hEnv, SQL_ATTR_ODBC_VERSION, (SQLPOINTER)options.odbc_version, SQL_IS_UINTEGER)) != SQL_SUCCESS){
 		odbc_herror(SQL_HANDLE_DBC, hDbc, erc, "SQLSetEnvAttr", "failed to set SQL_OV_ODBC3");
 		exit(EXIT_FAILURE);
 	}
@@ -339,6 +347,10 @@ main(int argc, char *argv[])
 		} 
 	}
 
+	SQLDisconnect(hDbc);
+	SQLFreeHandle(SQL_HANDLE_DBC, hDbc);
+	SQLFreeHandle(SQL_HANDLE_ENV, hEnv);
+
 	return 0;
 }
 
@@ -347,12 +359,12 @@ next_query()
 {
 	char query_line[4096];
 	static char *sql = NULL;
-	
+
 	if (feof(stdin))
 		return NULL;
-			
+
 	fprintf(options.verbose, "%s:%d: Query:\n", options.appname, __LINE__);
-	
+
 	free(sql);
 	sql = NULL;
 
@@ -409,6 +421,68 @@ free_metadata(struct METADATA *metadata, struct DATA *data, int ncols)
 	free(data);
 }
 
+static const char *
+prtype(SQLSMALLINT type)
+{
+	static char buffer[64];
+	
+	switch(type) {
+	case SQL_UNKNOWN_TYPE:		return "SQL_UNKNOWN_TYPE";
+	case SQL_CHAR:			return "SQL_CHAR";
+	case SQL_NUMERIC:		return "SQL_NUMERIC";
+	case SQL_DECIMAL:		return "SQL_DECIMAL";
+	case SQL_INTEGER:		return "SQL_INTEGER";
+	case SQL_SMALLINT:		return "SQL_SMALLINT";
+	case SQL_FLOAT:			return "SQL_FLOAT";
+	case SQL_REAL:			return "SQL_REAL";
+	case SQL_DOUBLE:		return "SQL_DOUBLE";
+#if (ODBCVER >= 0x0300)
+	case SQL_DATETIME:		return "SQL_DATETIME";
+#else
+	case SQL_DATE:			return "SQL_DATE";
+#endif
+	case SQL_VARCHAR:		return "SQL_VARCHAR";
+#if (ODBCVER >= 0x0300)
+	case SQL_TYPE_DATE:		return "SQL_TYPE_DATE";
+	case SQL_TYPE_TIME:		return "SQL_TYPE_TIME";
+	case SQL_TYPE_TIMESTAMP:	return "SQL_TYPE_TIMESTAMP";
+#endif
+#if (ODBCVER >= 0x0300)
+	case SQL_INTERVAL:		return "SQL_INTERVAL";
+#else
+	case SQL_TIME:			return "SQL_TIME";
+#endif  /* ODBCVER >= 0x0300 */
+	case SQL_TIMESTAMP:		return "SQL_TIMESTAMP";
+	case SQL_LONGVARCHAR:		return "SQL_LONGVARCHAR";
+	case SQL_BINARY:		return "SQL_BINARY";
+	case SQL_VARBINARY:		return "SQL_VARBINARY";
+	case SQL_LONGVARBINARY:		return "SQL_LONGVARBINARY";
+	case SQL_BIGINT:		return "SQL_BIGINT";
+	case SQL_TINYINT:		return "SQL_TINYINT";
+	case SQL_BIT:			return "SQL_BIT";
+#if (ODBCVER >= 0x0350)
+	case SQL_GUID:			return "SQL_GUID";
+#endif  /* ODBCVER >= 0x0350 */
+	}
+
+	sprintf(buffer, "unknown: %d", (int)type);
+	return buffer;
+}
+
+#define is_character_data(x)   (x==SQL_CHAR	    || \
+				x==SQL_VARCHAR	    || \
+				x==SQL_LONGVARCHAR  || \
+				x==SQL_WCHAR	    || \
+				x==SQL_WVARCHAR     || \
+				x==SQL_WLONGVARCHAR)
+
+static SQLLEN 
+bufsize(const struct METADATA *meta)
+{
+	assert(meta);
+	return meta->size > meta->width? meta->size : meta->width;
+}
+
 static void
 print_results(SQLHSTMT hStmt) 
 {
@@ -456,8 +530,10 @@ print_results(SQLHSTMT hStmt)
 		 */
 
 		fprintf(options.verbose, "Metadata\n");
-		fprintf(options.verbose, "%-6s  %-30s  %-30s  %-15s  %-6s  %-6s  \n", "col", "name", "source", "type", "size", "varies");
-		fprintf(options.verbose, "%.6s  %.30s  %.30s  %.15s  %.6s  %.6s  \n", dashes, dashes, dashes, dashes, dashes, dashes);
+		fprintf(options.verbose, "%-6s  %-30s  %-10s  %-18s  %-6s  %-6s  \n", 
+					 "col", "name", "type value", "type name", "size", "varies");
+		fprintf(options.verbose, "%.6s  %.30s  %.10s  %.18s  %.6s  %.6s  \n", 
+					 dashes, dashes, dashes, dashes, dashes, dashes);
 		for (c=0; c < ncols; c++) {
 			/* Get and print the metadata.  Optional: get only what you need. */
 			SQLCHAR name[512];
@@ -473,9 +549,32 @@ print_results(SQLHSTMT hStmt)
 			name[namelen] = '\0';
 			metadata[c].name = strdup((char *) name);
 			metadata[c].width = (ndigits > metadata[c].size)? ndigits : metadata[c].size;
+			
+			if (is_character_data(metadata[c].type)) {
+				SQLHDESC hDesc;
+				SQLINTEGER buflen;
+				
+				metadata[c].nchars = metadata[c].size;
+				
+				if ((erc = SQLAllocHandle(SQL_HANDLE_DESC, hStmt, &hDesc)) != SQL_SUCCESS) {
+					odbc_perror(hStmt, erc, "SQLAllocHandle", "failed");
+					exit(EXIT_FAILURE);
+				} 
+				if ((erc = SQLGetDescField(hDesc, c+1, SQL_DESC_OCTET_LENGTH, 
+								&metadata[c].size, sizeof(metadata[c].size), 
+								&buflen)) != SQL_SUCCESS) {
+					odbc_perror(hStmt, erc, "SQLGetDescField", "failed");
+					exit(EXIT_FAILURE);
+				} 
+				
+				if ((erc = SQLFreeHandle(SQL_HANDLE_DESC, hStmt)) != SQL_SUCCESS) {
+					odbc_perror(hStmt, erc, "SQLFreeHandle", "failed");
+					exit(EXIT_FAILURE);
+				} 
+			}
 
-			fprintf(options.verbose, "%6d  %30s  %30s  %15s  %6lu  %6d  \n", 
-				c+1, metadata[c].name, metadata[c].source, "(todo)", 
+			fprintf(options.verbose, "%6d  %30s  %10d  %18s  %6lu  %6d  \n", 
+				c+1, metadata[c].name, (int)metadata[c].type, prtype(metadata[c].type), 
 				(long unsigned int) metadata[c].size,  -1);
 
 #if 0
@@ -508,11 +607,11 @@ print_results(SQLHSTMT hStmt)
 			 * inaccesible to the application.  
 			 */
 
-			data[c].buffer = calloc(1, metadata[c].width);
+			data[c].buffer = calloc(1, bufsize(&metadata[c]));
 			assert(data[c].buffer);
 
 			if ((erc = SQLBindCol(hStmt, c+1, SQL_C_CHAR, (SQLPOINTER)data[c].buffer, 
-						metadata[c].width, &data[c].len)) != SQL_SUCCESS){
+						bufsize(&metadata[c]), &data[c].len)) != SQL_SUCCESS){
 				odbc_perror(hStmt, erc, "SQLBindCol", "failed");
 				exit(EXIT_FAILURE);
 			} 
@@ -535,11 +634,10 @@ print_results(SQLHSTMT hStmt)
 		 */
 		while (ncols > 0 && (erc = SQLFetch(hStmt)) != SQL_NO_DATA) {
 			switch(erc) {
-			case SQL_SUCCESS:
-				break;
 			case SQL_SUCCESS_WITH_INFO:
 				print_error_message(SQL_HANDLE_STMT, hStmt);
-				continue;
+			case SQL_SUCCESS:
+				break;
 			default:
 				odbc_perror(hStmt, erc, "SQLFetch", "failed");
 				exit(EXIT_FAILURE);
@@ -643,12 +741,6 @@ get_printable_size(int type, int size)	/* adapted from src/dblib/dblib.c */
  * Build the column header format string, based on the column width. 
  * This is just one solution to the question, "How wide should my columns be when I print them out?"
  */
-#define is_character_data(x)   (x==SQL_CHAR	    || \
-				x==SQL_VARCHAR	    || \
-				x==SQL_LONGVARCHAR  || \
-				x==SQL_WCHAR	    || \
-				x==SQL_WVARCHAR     || \
-				x==SQL_WLONGVARCHAR)
 static int
 set_format_string(struct METADATA * meta, const char separator[])
 {
@@ -733,6 +825,7 @@ get_login(int argc, char *argv[], OPTIONS *options)
 	
 	options->appname = tds_basename(argv[0]);
 	options->colsep = default_colsep; /* may be overridden by -t */
+	options->odbc_version = SQL_OV_ODBC3;	  /* may be overridden by -V */
 	
 	login = calloc(1, sizeof(LOGINREC));
 	
@@ -745,13 +838,15 @@ get_login(int argc, char *argv[], OPTIONS *options)
 		perror("unable to get hostname");
 	} 
 
-	while ((ch = getopt(argc, argv, "U:P:S:dD:i:o:e:t:hqv")) != -1) {
+	while ((ch = getopt(argc, argv, "U:P:S:dD:i:o:e:t:V:hqv")) != -1) {
+		char *p;
 		switch (ch) {
 		case 'U':
 			login->username = strdup(optarg);
 			break;
 		case 'P':
 			login->password = strdup(optarg);
+			memset(optarg, 0, strlen(optarg));
 			break;
 		case 'S':
 			options->servername = strdup(optarg);
@@ -779,6 +874,19 @@ get_login(int argc, char *argv[], OPTIONS *options)
 		case 'q':
 			options->fquiet = 1;
 			break;
+		case 'V':
+			switch(strtol(optarg, &p, 10)) {
+			case 3: 
+				options->odbc_version = SQL_OV_ODBC3
+				;
+				break;
+			case 2:
+				options->odbc_version = SQL_OV_ODBC2;
+				break;
+			default:
+				fprintf(stderr, "warning: -V must be 2 or 3, not %s.  Using default of 3\n", optarg);
+				break;
+			}
 		case 'v':
 			options->fverbose = 1;
 			break;

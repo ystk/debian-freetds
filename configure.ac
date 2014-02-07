@@ -1,7 +1,7 @@
 dnl Process this file with autoconf to produce a configure script.
 
 dnl ------------------------------------------------------------
-dnl $Id: configure.ac,v 1.29.2.11 2008/05/07 22:57:52 jklowden Exp $
+dnl $Id: configure.ac,v 1.60.2.5 2011/08/12 11:50:17 freddy77 Exp $
 dnl If you're trying to create a new configure test, try
 dnl
 dnl 	http://autogen.sourceforge.net/conftest.html
@@ -12,12 +12,12 @@ dnl ------------------------------------------------------------
 # ------------------------------------------------------------
 # Initialization
 # ------------------------------------------------------------
-AC_INIT(FreeTDS, 0.82)
+AC_INIT(FreeTDS, 0.91)
 AC_CONFIG_SRCDIR(src/dblib/dblib.c)
 AC_PREREQ(2.53)
-AC_REVISION($Revision: 1.29.2.11 $)
+AC_REVISION($Revision: 1.60.2.5 $)
 
-AM_INIT_AUTOMAKE
+AM_INIT_AUTOMAKE([dist-bzip2])
 AC_CONFIG_HEADERS(include/config.h)
 
 dnl configuration directory will be /usr/local/etc
@@ -81,6 +81,7 @@ CPPFLAGS="$CPPFLAGS -D_FREETDS_LIBRARY_SOURCE"
 AC_PROG_CC
 AC_PROG_CPP
 AM_PROG_CC_C_O
+AC_C_INLINE
 
 dnl Disable libtool 1.5 support for languages we don't use
 dnl (cfr http://lists.gnu.org/archive/html/libtool/2005-08/msg00137.html)
@@ -90,6 +91,7 @@ define([AC_LIBTOOL_LANG_GCJ_CONFIG], [:])dnl
 
 AC_LIBTOOL_WIN32_DLL
 AC_PROG_LIBTOOL
+AC_LTDL_DLLIB
 LT_AC_PROG_RC
 
 AC_ARG_ENABLE(libiconv,
@@ -100,13 +102,15 @@ if test "$use_libiconv" = "yes" ; then
 	AM_ICONV
 else 
 	AC_MSG_NOTICE(libiconv disabled)	
+	AC_DEFINE_UNQUOTED(ICONV_CONST, const, [Define as const if the declaration of iconv() needs const.])
 fi
 
 
 # See if we have doxygen installed
 AC_CHECK_PROG(DOXYGEN,doxygen,doxygen)
-AC_CHECK_PROG(ODBC_CONFIG,odbc_config,odbc_config)
 AM_CONDITIONAL(HAVE_DOXYGEN, [test -n "$DOXYGEN"])
+AC_CHECK_PROG(ODBC_CONFIG,odbc_config,odbc_config)
+AC_CHECK_PROG(PKG_CONFIG,pkg-config,pkg-config)
 
 # ------------------------------------------------------------
 # Check for CVS-only sources.
@@ -133,7 +137,15 @@ AC_SUBST(HAVE_PERL_SOURCES)
 # Checks for libraries.
 # ------------------------------------------------------------
 AC_ARG_ENABLE(krb5,
-  AS_HELP_STRING([--enable-krb5], [enable Kerberos support (EXPERIMENTAL)]))
+  AS_HELP_STRING([--enable-krb5@<:@=LIB@:>@], [enable Kerberos support, optionally with library]))
+
+krb5_libs=auto
+case $enable_krb5 in
+  yes) ;;
+  "" | no) krb5_libs= ;;
+  -* | */* | *.a | *.so | *.so.* | *.o) krb5_libs="$enable_krb5" ;;
+  *) krb5_libs="-l$enable_krb5" ;;
+esac
 
 OLDLIBS="$LIBS"
 LIBS=""
@@ -143,11 +155,12 @@ case $host in
 	tds_mingw=yes
 	if test "$host_cpu" = "x86_64"; then
 		LIBS="-lws2_32"
-	elif test -r /usr/lib/w32api/libwsock32.a; then
-		LIBS="-L/usr/lib/w32api -lwsock32"
+	elif test -r /usr/lib/w32api/libws2_32.a; then
+		LIBS="-L/usr/lib/w32api -lws2_32"
 	else
-		LIBS="-lwsock32"
+		LIBS="-lws2_32"
 	fi
+	krb5_libs=
 	AM_CONDITIONAL(MINGW32, true)
 	;;
 *-*-hpux*)
@@ -162,28 +175,34 @@ case $host in
 	CPPFLAGS="$CPPFLAGS -D_XOPEN_SOURCE -D_XOPEN_SOURCE_EXTENDED"
 	LIBS="$LIBS -lxnet"
 	AC_SEARCH_LIBS(gethostbyname, nsl)
-	if test "$enable_krb5" = "yes" ; then
-		AC_SEARCH_LIBS(gss_init_sec_context, [gssapi_krb5 gssapi])
-		if test "$ac_cv_search_gss_init_sec_context" != no; then
-			AC_DEFINE(ENABLE_KRB5, 1, [Defined if --enable-krb5 used and library detected])
-		fi
-	fi
 
+	# check for _xpg_ functions
+	AC_CHECK_FUNCS([_xpg_accept _xpg_getpeername _xpg_getsockname _xpg_getsockopt _xpg_recvfrom \
+	__accept __getpeername __getsockname __getsockopt __recvfrom])
 	AM_CONDITIONAL(MINGW32, false)
 	;;
 *)
 	AC_SEARCH_LIBS(socket, socket)
 	AC_SEARCH_LIBS(gethostbyname, nsl)
-	if test "$enable_krb5" = "yes" ; then
-		AC_SEARCH_LIBS(gss_init_sec_context, [gssapi_krb5 gssapi])
-		if test "$ac_cv_search_gss_init_sec_context" != no; then
-			AC_DEFINE(ENABLE_KRB5, 1, [Defined if --enable-krb5 used and library detected])
-		fi
-	fi
 
 	AM_CONDITIONAL(MINGW32, false)
 	;;
 esac
+
+case "$krb5_libs" in
+"" ) ;;
+"auto")
+	AC_SEARCH_LIBS(gss_init_sec_context, [gssapi_krb5 gssapi])
+	if test "$ac_cv_search_gss_init_sec_context" != no; then
+		AC_DEFINE(ENABLE_KRB5, 1, [Defined if --enable-krb5 used and library detected])
+	fi
+	;;
+*)
+	AC_DEFINE(ENABLE_KRB5, 1, [Defined if --enable-krb5 used and library detected])
+	LIBS="$LIBS $krb5_libs"
+	;;
+esac
+
 NETWORK_LIBS="$LIBS"
 LIBS="$OLDLIBS"
 AC_SUBST(NETWORK_LIBS)
@@ -228,6 +247,17 @@ int main()
 	LIBS="$PTHREAD_LIBS $LIBS"
 fi
 
+# check for SSPI
+AC_ARG_ENABLE(sspi,
+  AS_HELP_STRING([--enable-sspi], [enable SSPI support]))
+# disable by default
+enable_sspi=${enable_sspi-no}
+# only if MingW (TODO other compilers)
+test $tds_mingw != yes && enable_sspi=no
+AM_CONDITIONAL(HAVE_SSPI, test "$enable_sspi" = "yes")
+if test "$enable_sspi" = "yes"; then
+	AC_DEFINE(HAVE_SSPI, 1, [Defined if --enable-sspi and SSPI detected])
+fi
 
 # ------------------------------------------------------------
 # Checks for header files.
@@ -238,12 +268,41 @@ AC_STRUCT_TIMEZONE
 AC_CHECK_MEMBERS([struct tm.__tm_zone],,,[#include <sys/types.h>
 #include <$ac_cv_struct_tm>
 ])
-AC_CHECK_HEADERS([unistd.h errno.h wchar.h sys/time.h sys/types.h \
-sys/param.h sys/stat.h sys/wait.h limits.h locale.h odbcss.h readpassphrase.h \
-signal.h libgen.h poll.h])
+AC_CHECK_HEADERS([	errno.h \
+			getopt.h \
+			libgen.h \
+			limits.h \
+			locale.h \
+			poll.h \
+			readpassphrase.h \
+			signal.h \
+			stddef.h \
+			sys/param.h \
+			sys/select.h \
+			sys/stat.h \
+			sys/time.h \
+			sys/types.h \
+			sys/resource.h \
+			sys/wait.h \
+			unistd.h \
+			wchar.h \
+			inttypes.h])
+AC_CHECK_HEADERS([windows.h sql.h odbcss.h],[],[],[[#ifdef HAVE_WINDOWS_H
+# include <windows.h>
+#endif
+#ifdef HAVE_SQL_H
+# include <sql.h>
+#endif
+]])
 if test $tds_mingw = no; then
-	AC_CHECK_HEADERS([sys/socket.h arpa/inet.h netdb.h netinet/in.h \
-netinet/tcp.h paths.h sys/ioctl.h langinfo.h])
+    AC_CHECK_HEADERS([	arpa/inet.h \
+			langinfo.h \
+			netdb.h \
+			netinet/in.h \
+			netinet/tcp.h \
+			paths.h \
+			sys/ioctl.h \
+			sys/socket.h ])
 fi
 AC_HAVE_INADDR_NONE
 
@@ -347,6 +406,16 @@ AC_EGREP_CPP(yes,
 
 TYPE_SOCKLEN_T
 
+AC_MSG_CHECKING([whether getopt has optreset support])
+AC_TRY_LINK([#ifdef HAVE_GETOPT_H
+#include <getopt.h>
+#endif], [extern int optreset; optreset = 0;],
+[AC_MSG_RESULT(yes)
+AC_DEFINE(HAVE_GETOPT_OPTRESET, 1, [Define if your getopt(3) defines and uses optreset])],
+[AC_MSG_RESULT(no)]
+)
+
+
 # ------------------------------------------------------------
 # Checks for compiler characteristics.
 # ------------------------------------------------------------
@@ -403,14 +472,15 @@ TDS_NULL_IS_ZERO
 AC_CHECK_FUNCS([vsnprintf _vsnprintf gettimeofday \
 nl_langinfo locale_charset setenv putenv \
 getuid getpwuid getpwuid_r fstat alarm fork \
-gethrtime localtime_r setitimer])
+gethrtime localtime_r setitimer _lseeki64 _telli64 \
+_fseeki64 _ftelli64 setrlimit])
 OLD_LIBS="$LIBS"
 LIBS="$LIBS $NETWORK_LIBS"
 AC_CHECK_FUNCS([inet_ntoa_r getipnodebyaddr getipnodebyname \
 getaddrinfo getnameinfo inet_ntop gethostname poll])
 LIBS="$OLD_LIBS"
 AC_REPLACE_FUNCS([asprintf vasprintf atoll strtok_r readpassphrase \
-strlcpy strlcat basename])
+strlcpy strlcat basename getopt])
 AC_FUNC_FSEEKO
 TDS_GETTIMEMILLI
 
@@ -425,15 +495,15 @@ AC_HAVE_MALLOC_OPTIONS
 AC_MSG_RESULT(checking compile-time options)
 
 AC_ARG_WITH(tdsver,
-AS_HELP_STRING([--with-tdsver=VERSION], [TDS protocol version (4.2/4.6/5.0/7.0/8.0) [5.0]]))
+AS_HELP_STRING([--with-tdsver=VERSION], [TDS protocol version (4.2/4.6/5.0/7.0/7.1) [5.0]]))
 if test "$with_tdsver" = "4.2"; then
 	AC_DEFINE(TDS42, 1, [Define to use TDS 4.2 by default])
 elif test "$with_tdsver" = "4.6"; then
 	AC_DEFINE(TDS46, 1, [Define to use TDS 4.6 by default])
 elif test "$with_tdsver" = "7.0"; then
 	AC_DEFINE(TDS70, 1, [Define to use TDS 7.0 by default])
-elif test "$with_tdsver" = "8.0"; then
-	AC_DEFINE(TDS80, 1, [Define to use TDS 8.0 by default])
+elif test "$with_tdsver" = "7.1"; then
+	AC_DEFINE(TDS71, 1, [Define to use TDS 7.1 by default])
 else
 	AC_DEFINE(TDS50, 1, [Define to use TDS 5.0 by default])
 fi
@@ -481,7 +551,7 @@ if test "$with_unixodbc"; then
 fi
 
 AC_ARG_WITH(odbc_nodm,
-AS_HELP_STRING([--with-odbc-nodm=DIR], [build odbc without driver manager (headers in DIR)]))
+AS_HELP_STRING([--with-odbc-nodm=DIR], [build odbc using headers in DIR/include]))
 if test "$with_odbc_nodm"; then
 	if echo "$with_odbc_nodm" | grep -v '^/'; then
 		with_odbc_nodm="$PWD/$with_odbc_nodm"
@@ -623,8 +693,17 @@ AC_ARG_WITH(gnutls,
 AS_HELP_STRING([--with-gnutls], [build with TLS support]))
 if test "$with_gnutls" = "yes"; then
 	AC_DEFINE(HAVE_GNUTLS, 1, [Define to 1 if you have GNU tls.])
-	CPPFLAGS="$CPPFLAGS `libgnutls-config --cflags`"
-	NETWORK_LIBS="$NETWORK_LIBS `libgnutls-config --libs`"
+	if test "$PKG_CONFIG" != "" && "$PKG_CONFIG" --libs gnutls > /dev/null 2>&1; then
+		CPPFLAGS="$CPPFLAGS `$PKG_CONFIG --cflags gnutls`"
+		NETWORK_LIBS="$NETWORK_LIBS `$PKG_CONFIG --libs gnutls`"
+	else
+		CPPFLAGS="$CPPFLAGS `libgnutls-config --cflags`"
+		NETWORK_LIBS="$NETWORK_LIBS `libgnutls-config --libs`"
+	fi
+	OLDLIBS="$LIBS"
+	LIBS="$LIBS $NETWORK_LIBS"
+	AC_CHECK_FUNCS([gnutls_record_disable_padding])
+	LIBS="$OLDLIBS"
 else
 	CHECK_OPENSSL
 fi
@@ -716,6 +795,12 @@ if test "$enable_developing" = "yes" ; then
 	AC_DEFINE_UNQUOTED(ENABLE_DEVELOPING, 1, [Define to enable work in progress code])
 fi
 
+AC_ARG_ENABLE(odbc-wide,
+  AS_HELP_STRING([--enable-odbc-wide], [enable wide string support in odbc [experimental]]))
+if test "$enable_odbc_wide" = "yes" ; then
+	AC_DEFINE_UNQUOTED(ENABLE_ODBC_WIDE, 1, [Define to enable ODBC wide string support])
+fi
+
 AC_ARG_ENABLE(distcheck_build,
   AS_HELP_STRING([--enable-distcheck-build], [used internally for testing]))
 if test "$enable_distcheck_build" = "yes" ; then
@@ -764,7 +849,8 @@ AC_CONFIG_FILES(include/tdsver.h \
 	src/apps/Makefile \
 	src/apps/fisql/Makefile \
 	freetds.spec \
-	win32/Makefile win32/msvc6/Makefile win32/dev-cpp/Makefile \
-	win32/version.rc win32/freetds.nsh
+	win32/Makefile win32/msvc6/Makefile \
+	win32/version.rc win32/freetds.nsh \
+	vms/Makefile
 )
 AC_OUTPUT

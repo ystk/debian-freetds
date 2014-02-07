@@ -1,5 +1,5 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
- * Copyright (C) 2004, 2005  James K. Lowden
+ * Copyright (C) 2004-2009  James K. Lowden
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -41,12 +41,26 @@
 #include <string.h>
 #endif
 
-#include <sqlfront.h>
+#if HAVE_LIMITS_H
+#include <limits.h>
+#endif
+
+#if HAVE_LOCALE_H
+#include <locale.h>
+#endif
+
+#include <sybfront.h>
 #include <sybdb.h>
 #include "replacements.h"
 
-static char software_version[] = "$Id: bsqldb.c,v 1.32 2007/12/06 19:00:24 freddy77 Exp $";
+static char software_version[] = "$Id: bsqldb.c,v 1.49 2011/03/13 21:32:46 jklowden Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
+
+#ifdef _WIN32
+#define NULL_DEVICE "NUL:"
+#else
+#define NULL_DEVICE "/dev/null"
+#endif
 
 int err_handler(DBPROCESS * dbproc, int severity, int dberr, int oserr, char *dberrstr, char *oserrstr);
 int msg_handler(DBPROCESS * dbproc, DBINT msgno, int msgstate, int severity, char *msgtext, 
@@ -105,6 +119,8 @@ main(int argc, char *argv[])
 	DBPROCESS *dbproc;
 	RETCODE erc;
 
+	setlocale(LC_ALL, "");
+
 	/* Initialize db-lib */
 	erc = dbinit();	
 	if (erc == FAIL) {
@@ -112,15 +128,14 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 	
+	/* Install our error and message handlers */
+	dberrhandle(err_handler);
+	dbmsghandle(msg_handler);
 
 	memset(&options, 0, sizeof(options));
 	options.headers = stderr;
 	login = get_login(argc, argv, &options); /* get command-line parameters and call dblogin() */
 	assert(login != NULL);
-
-	/* Install our error and message handlers */
-	dberrhandle(err_handler);
-	dbmsghandle(msg_handler);
 
 	/* 
 	 * Override stdin, stdout, and stderr, as required 
@@ -149,7 +164,7 @@ main(int argc, char *argv[])
 	if (options.fverbose) {
 		options.verbose = stderr;
 	} else {
-		static const char null_device[] = "/dev/null";
+		static const char null_device[] = NULL_DEVICE;
 		options.verbose = fopen(null_device, "w");
 		if (options.verbose == NULL) {
 			fprintf(stderr, "%s:%d unable to open %s for verbose operation: %s\n", 
@@ -163,8 +178,8 @@ main(int argc, char *argv[])
 	/* 
 	 * Connect to the server 
 	 */
-	dbproc = dbopen(login, options.servername);
-	assert(dbproc != NULL);
+	if ((dbproc = dbopen(login, options.servername)) == NULL)
+		return 1;
 	
 	/* Switch to the specified database, if any */
 	if (options.database)
@@ -402,20 +417,26 @@ print_results(DBPROCESS *dbproc)
 			 * inaccesible to the application.  
 			 */
 
-			data[c].buffer = calloc(1, metadata[c].width);
-			assert(data[c].buffer);
+			if (metadata[c].width < INT_MAX) {
+				data[c].buffer = calloc(1, 1 + metadata[c].width); /* allow for null terminator */
+				assert(data[c].buffer);
 
-			erc = dbbind(dbproc, c+1, bindtype, 0, (BYTE *) data[c].buffer);
-			if (erc == FAIL) {
-				fprintf(stderr, "%s:%d: dbbind(), column %d failed\n", options.appname, __LINE__, c+1);
-				return;
+				erc = dbbind(dbproc, c+1, bindtype, 0, (BYTE *) data[c].buffer);
+				if (erc == FAIL) {
+					fprintf(stderr, "%s:%d: dbbind(), column %d failed\n", options.appname, __LINE__, c+1);
+					return;
+				}
+
+				erc = dbnullbind(dbproc, c+1, &data[c].status);
+				if (erc == FAIL) {
+					fprintf(stderr, "%s:%d: dbnullbind(), column %d failed\n", options.appname, __LINE__, c+1);
+					return;
+				}
+			} else {
+				/* We don't bind text buffers, but use dbreadtext instead. */
+				data[c].buffer = NULL;
 			}
 
-			erc = dbnullbind(dbproc, c+1, &data[c].status);
-			if (erc == FAIL) {
-				fprintf(stderr, "%s:%d: dbnullbind(), column %d failed\n", options.appname, __LINE__, c+1);
-				return;
-			}
 		}
 		
 		/* 
@@ -515,6 +536,18 @@ print_results(DBPROCESS *dbproc)
 			switch (row_code) {
 			case REG_ROW:
 				for (c=0; c < ncols; c++) {
+					if (metadata[c].width == INT_MAX) { /* TEXT/IMAGE */
+						BYTE *p = dbdata(dbproc, c+1);
+						size_t len = dbdatlen(dbproc, c+1);
+						if (len == 0) {
+							fputs("NULL", stdout);
+						} else if (fwrite(p, len, 1, stdout) != 1) {
+							perror("could not write to output file");
+							exit(EXIT_FAILURE);
+						}
+						fprintf(stdout, metadata[c].format_string); /* col/row separator */
+						continue;
+					}
 					switch (data[c].status) { /* handle nulls */
 					case -1: /* is null */
 						/* TODO: FreeTDS 0.62 does not support dbsetnull() */
@@ -628,6 +661,9 @@ static int
 get_printable_size(int type, int size)	/* adapted from src/dblib/dblib.c */
 {
 	switch (type) {
+	case SYBBITN:
+	case SYBBIT:
+		return 1;
 	case SYBINTN:
 		switch (size) {
 		case 1:
@@ -645,11 +681,15 @@ get_printable_size(int type, int size)	/* adapted from src/dblib/dblib.c */
 		return 6;
 	case SYBINT4:
 		return 11;
+	case SYBDECIMAL:
+	case SYBNUMERIC:
 	case SYBINT8:
 		return 21;
 	case SYBVARCHAR:
 	case SYBCHAR:
 		return size;
+	case SYBNVARCHAR:
+		return size/2;
 	case SYBFLT8:
 		return 11;	/* FIX ME -- we do not track precision */
 	case SYBREAL:
@@ -659,19 +699,24 @@ get_printable_size(int type, int size)	/* adapted from src/dblib/dblib.c */
 	case SYBMONEY4:
 		return 12;	/* FIX ME */
 	case SYBDATETIME:
-		return 26;	/* FIX ME */
 	case SYBDATETIME4:
+	case SYBDATETIMN:
 		return 26;	/* FIX ME */
-#if 0	/* seems not to be exported to sybdb.h */
-	case SYBBITN:
+#if 0	/* not exported by sybdb.h */
+	case SYBLONGBINARY:
+	case SYBLONGCHAR:
 #endif
-	case SYBBIT:
-		return 1;
-		/* FIX ME -- not all types present */
-	default:
-		return 0;
+	case SYBBINARY:
+	case SYBIMAGE:
+	case SYBTEXT:
+	case SYBNTEXT:
+	case SYBVARBINARY:
+		return INT_MAX;
 	}
-
+	
+	/* FIX ME -- not all types present */
+	fprintf(stderr, "type %d not supported, sorry\n", type);
+	exit(EXIT_FAILURE);
 }
 
 /** 
@@ -682,25 +727,29 @@ get_printable_size(int type, int size)	/* adapted from src/dblib/dblib.c */
 static int
 set_format_string(struct METADATA * meta, const char separator[])
 {
-	int width, ret;
+	int width;
 	const char *size_and_width;
 	assert(meta);
 
-	if(0 == strcmp(options.colsep, default_colsep)) { 
-		/* right justify numbers, left justify strings */
-		size_and_width = is_character_data(meta->type)? "%%-%d.%ds%s" : "%%%d.%ds%s";
-		
-		width = get_printable_size(meta->type, meta->size);
-		if (width < strlen(meta->name))
-			width = strlen(meta->name);
-
-		ret = asprintf(&meta->format_string, size_and_width, width, width, separator);
-	} else {
-		/* For anything except the default two-space separator, don't justify the strings. */
-		ret = asprintf(&meta->format_string, "%%s%s", separator);
+	if ((width = get_printable_size(meta->type, meta->size)) == INT_MAX) {
+		/* TEXT/IMAGE: no attempt to format the column; just splat the data */
+		meta->format_string = strdup(separator);
+		return strlen(meta->format_string);
 	}
-		       
-	return ret;
+
+	/* For anything except the default two-space separator, don't justify the strings. */
+	if(0 != strcmp(options.colsep, default_colsep)) { 
+		return asprintf(&meta->format_string, "%%s%s", separator);
+	}
+		
+	/* Set the printing width large enough for the data or its title, whichever is greater. */
+	if (width < strlen(meta->name))
+		width = strlen(meta->name);
+
+	/* right justify numbers, left justify strings */
+	size_and_width = is_character_data(meta->type)? "%%-%d.%ds%s" : "%%%d.%ds%s";
+
+	return asprintf(&meta->format_string, size_and_width, width, width, separator);
 }
 
 static void
@@ -755,6 +804,7 @@ get_login(int argc, char *argv[], OPTIONS *options)
 {
 	LOGINREC *login;
 	int ch;
+	char *username = NULL, *password = NULL;
 
 	extern char *optarg;
 
@@ -772,19 +822,16 @@ get_login(int argc, char *argv[], OPTIONS *options)
 	
 	DBSETLAPP(login, options->appname);
 	
-	if (-1 == gethostname(options->hostname, sizeof(options->hostname))) {
-		perror("unable to get hostname");
-	} else {
-		DBSETLHOST(login, options->hostname);
-	}
-
-	while ((ch = getopt(argc, argv, "U:P:S:dD:i:o:e:t:hqv")) != -1) {
+	options->servername = getenv("DSQUERY");
+	
+	while ((ch = getopt(argc, argv, "U:P:S:dD:i:o:e:t:H:hqv")) != -1) {
 		switch (ch) {
 		case 'U':
-			DBSETLUSER(login, optarg);
+			username = strdup(optarg);
 			break;
 		case 'P':
-			DBSETLPWD(login, optarg);
+			password = strdup(optarg);
+			memset(optarg, 0, strlen(optarg));
 			break;
 		case 'S':
 			options->servername = strdup(optarg);
@@ -809,6 +856,9 @@ get_login(int argc, char *argv[], OPTIONS *options)
 		case 'h':
 			options->headers = stdout;
 			break;
+		case 'H':
+			strcpy(options->hostname, optarg);
+			break;
 		case 'q':
 			options->fquiet = 1;
 			break;
@@ -821,7 +871,32 @@ get_login(int argc, char *argv[], OPTIONS *options)
 			exit(1);
 		}
 	}
+
+	if (username) 
+		DBSETLUSER(login, username);
 	
+
+	if( !options->hostname[0] ) {
+		if (-1 == gethostname(options->hostname, sizeof(options->hostname))) {
+			perror("unable to get hostname");
+		}
+	}
+
+	if( options->hostname[0] ) {
+		DBSETLHOST(login, options->hostname);
+	}
+
+	/* Look for a password if a username was provided, else assume domain login */
+	if (password) {
+		DBSETLPWD(login, password);
+		memset(password, 0, strlen(password));
+	} else if (username) {
+		char password[128];
+
+		readpassphrase("Password: ", password, sizeof(password), RPP_ECHO_OFF);
+		DBSETLPWD(login, password);
+        }
+
 	if (!options->servername) {
 		usage(options->appname);
 		exit(1);
@@ -869,7 +944,7 @@ msg_handler(DBPROCESS * dbproc, DBINT msgno, int msgstate, int severity, char *m
 	fprintf(stderr, "%s\n", msgtext);
 	
 	if (severity > 10) {
-		fprintf(stderr, "%s: error: severity %d > 10, exiting\n", options.appname, severity);
+		fprintf(stderr, "%s: error: severity %d > 10, exiting\n", options.appname, severity);
 		exit(severity);
 	}
 

@@ -43,18 +43,18 @@
 
 #include <assert.h>
 
-#include "tds.h"
-#include "tdsconvert.h"
-#include "sybfront.h"
-#include "sybdb.h"
-#include "dblib.h"
-#include "replacements.h"
+#include <tds.h>
+#include <tdsconvert.h>
+#include <replacements.h>
+#include <sybfront.h>
+#include <sybdb.h>
+#include <dblib.h>
 
 #ifdef DMALLOC
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: rpc.c,v 1.64 2007/12/06 18:32:34 freddy77 Exp $");
+TDS_RCSID(var, "$Id: rpc.c,v 1.70 2009/09/01 05:47:31 freddy77 Exp $");
 
 static void rpc_clear(DBREMOTE_PROC * rpc);
 static void param_clear(DBREMOTE_PROC_PARAM * pparam);
@@ -76,7 +76,7 @@ static TDSPARAMINFO *param_info_alloc(TDSSOCKET * tds, DBREMOTE_PROC * rpc);
  * \sa dbrpcparam(), dbrpcsend()
  */
 RETCODE
-dbrpcinit(DBPROCESS * dbproc, char *rpcname, DBSMALLINT options)
+dbrpcinit(DBPROCESS * dbproc, const char rpcname[], DBSMALLINT options)
 {
 	DBREMOTE_PROC **rpc;
 	int dbrpcrecompile = 0;
@@ -86,6 +86,11 @@ dbrpcinit(DBPROCESS * dbproc, char *rpcname, DBSMALLINT options)
 	DBPERROR_RETURN(IS_TDSDEAD(dbproc->tds_socket), SYBEDDNE);
 	CHECK_NULP(rpcname, "dbrpcinit", 2, FAIL);
 
+	/*
+	 * TODO: adhere to docs.  Only Microsoft supports DBRPCRESET.  They say:
+	 * "Cancels a single stored procedure or a batch of stored procedures. 
+	 *  If rpcname is specified, that new stored procedure is initialized after the cancellation is complete."
+	 */
 	if (options & DBRPCRESET) {
 		rpc_clear(dbproc->rpc);
 		dbproc->rpc = NULL;
@@ -99,27 +104,27 @@ dbrpcinit(DBPROCESS * dbproc, char *rpcname, DBSMALLINT options)
 	/* all other options except DBRPCRECOMPILE are invalid */
 	DBPERROR_RETURN3(options, SYBEIPV, (int) options, "options", "dbrpcinit");
 
-	/* to allocate, first find a free node */
+	/* find a free node */
 	for (rpc = &dbproc->rpc; *rpc != NULL; rpc = &(*rpc)->next) {
 		/* check existing nodes for name match (there shouldn't be one) */
-		if (!(*rpc)->name)
-			return FAIL;
-		if (strcmp((*rpc)->name, rpcname) == 0)
-			return FAIL /* dbrpcsend should free pointer */ ;
+		if ((*rpc)->name == NULL  || strcmp((*rpc)->name, rpcname) == 0) {
+			tdsdump_log(TDS_DBG_INFO1, "error: dbrpcinit called twice for procedure \"%s\"\n", rpcname);
+			return FAIL; 
+		}
 	}
 
 	/* rpc now contains the address of the dbproc's first empty (null) DBREMOTE_PROC* */
 
 	/* allocate */
-	*rpc = (DBREMOTE_PROC *) malloc(sizeof(DBREMOTE_PROC));
-	if (*rpc == NULL)
+	if ((*rpc = (DBREMOTE_PROC *) calloc(1, sizeof(DBREMOTE_PROC))) == NULL) {
+		dbperror(dbproc, SYBEMEM, errno);
 		return FAIL;
-	memset(*rpc, 0, sizeof(DBREMOTE_PROC));
+	}
 
-	(*rpc)->name = strdup(rpcname);
-	if ((*rpc)->name == NULL) {
+	if (((*rpc)->name = strdup(rpcname)) == NULL) {
 		free(*rpc);
 		*rpc = NULL;
+		dbperror(dbproc, SYBEMEM, errno);
 		return FAIL;
 	}
 
@@ -143,7 +148,8 @@ dbrpcinit(DBPROCESS * dbproc, char *rpcname, DBSMALLINT options)
  *        If not used, parameters will be passed in order instead of by name. 
  * \param status must be DBRPCRETURN, if this parameter is a return parameter, else 0. 
  * \param type datatype of the value parameter e.g., SYBINT4, SYBCHAR.
- * \param maxlen Maximum output size of the parameter's value to be returned by the stored procedure, usually the size of your host variable. 
+ * \param maxlen Maximum output size of the parameter's value to be returned by the stored procedure, 
+ *  	  usually the size of your host variable. 
  *        Fixed-length datatypes take -1 (NULL or not).  
  *        Non-OUTPUT parameters also use -1.  
  *	   Use 0 to send a NULL value for a variable length datatype.  
@@ -155,7 +161,7 @@ dbrpcinit(DBPROCESS * dbproc, char *rpcname, DBSMALLINT options)
  * \sa dbrpcinit(), dbrpcsend()
  */
 RETCODE
-dbrpcparam(DBPROCESS * dbproc, char *paramname, BYTE status, int type, DBINT maxlen, DBINT datalen, BYTE * value)
+dbrpcparam(DBPROCESS * dbproc, const char paramname[], BYTE status, int type, DBINT maxlen, DBINT datalen, BYTE * value)
 {
 	char *name = NULL;
 	DBREMOTE_PROC *rpc;
@@ -328,7 +334,9 @@ param_row_alloc(TDSPARAMINFO * params, TDSCOLUMN * curcol, int param_num, void *
 		return NULL;
 	if (size > 0 && value) {
 		tdsdump_log(TDS_DBG_FUNC, "copying %d bytes of data to parameter #%d\n", size, param_num);
-		if (!is_blob_type(curcol->column_type)) {
+		if (!is_blob_col(curcol)) {
+			if (is_numeric_type(curcol->column_type))
+				memset(curcol->column_data, 0, sizeof(TDS_NUMERIC));
 			memcpy(curcol->column_data, value, size);
 		} else {
 			TDSBLOB *blob = (TDSBLOB *) curcol->column_data;
@@ -392,6 +400,15 @@ param_info_alloc(TDSSOCKET * tds, DBREMOTE_PROC * rpc)
 
 		tdsdump_log(TDS_DBG_INFO1, "parm_info_alloc(): parameter null-ness = %d\n", param_is_null);
 
+		pcol = params->columns[i];
+
+		if (temp_value && is_numeric_type(temp_type)) {
+			DBDECIMAL *dec = (DBDECIMAL*) temp_value;
+			pcol->column_prec = dec->precision;
+			pcol->column_scale = dec->scale;
+			if (dec->precision > 0 && dec->precision <= MAXPRECISION)
+				temp_datalen = tds_numeric_bytes_per_prec[dec->precision] + 2;
+		}
 		if (param_is_null || (p->status & DBRPCRETURN)) {
 			if (param_is_null) {
 				temp_datalen = 0;
@@ -404,12 +421,10 @@ param_info_alloc(TDSSOCKET * tds, DBREMOTE_PROC * rpc)
 			temp_datalen = tds_get_size_by_type(temp_type);
 		}
 
-		pcol = params->columns[i];
-
 		/* meta data */
 		if (p->name) {
 			tds_strlcpy(pcol->column_name, p->name, sizeof(pcol->column_name));
-			pcol->column_namelen = strlen(pcol->column_name);
+			pcol->column_namelen = (int)strlen(pcol->column_name);
 		}
 
 		tds_set_param_type(tds, pcol, temp_type);

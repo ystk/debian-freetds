@@ -73,7 +73,7 @@ static const char rcsid[] = "$OpenBSD: readpassphrase.c,v 1.16 2003/06/17 21:56:
 
 #include <replacements/readpassphrase.h>
 
-#ifndef WIN32
+#if !defined(_WIN32) && !defined(_WIN64)
 #include <termios.h>
 
 #ifndef _PATH_TTY
@@ -171,9 +171,9 @@ restart:
 				ch &= 0x7f;
 			if (isalpha((unsigned char) ch)) {
 				if ((flags & RPP_FORCELOWER))
-					ch = tolower(ch);
+					ch = tolower((unsigned char) ch);
 				if ((flags & RPP_FORCEUPPER))
-					ch = toupper(ch);
+					ch = toupper((unsigned char) ch);
 			}
 			*p++ = ch;
 		}
@@ -231,7 +231,7 @@ static void handler(int s)
 	signo = s;
 }
 
-#else /* WIN32 */
+#else /* _WIN32 */
 
 char *
 readpassphrase(const char *prompt, char *buf, size_t bufsiz, int flags)
@@ -269,6 +269,6 @@ readpassphrase(const char *prompt, char *buf, size_t bufsiz, int flags)
 	return (ch == EOF ? NULL : buf);
 }
  
-#endif /* WIN32 */
+#endif /* _WIN32 */
 
 #endif /* HAVE_READPASSPHRASE */

@@ -85,6 +85,10 @@ LIB32=link.exe -lib
 # PROP Default_Filter "cpp;c;cxx;rc;def;r;odl;idl;hpj;bat"
 # Begin Source File
 
+SOURCE=..\..\src\tds\bulk.c
+# End Source File
+# Begin Source File
+
 SOURCE=..\..\src\tds\challenge.c
 # End Source File
 # Begin Source File
@@ -126,6 +130,10 @@ SOURCE=..\..\src\tds\md4.c
 # Begin Source File
 
 SOURCE=..\..\src\tds\md5.c
+# End Source File
+# Begin Source File
+
+SOURCE=..\..\src\tds\hmac_md5.c
 # End Source File
 # Begin Source File
 
@@ -175,6 +183,14 @@ SOURCE=..\..\src\tds\vstrbuild.c
 
 SOURCE=..\..\src\tds\write.c
 # End Source File
+# Begin Source File
+
+SOURCE=..\..\src\tds\sspi.c
+# End Source File
+# Begin Source File
+
+SOURCE=..\..\src\tds\win_mutex.c
+# End Source File
 # End Group
 # Begin Group "Header Files"
 
@@ -198,6 +214,10 @@ SOURCE=..\..\include\md4.h
 # Begin Source File
 
 SOURCE=..\..\include\md5.h
+# End Source File
+# Begin Source File
+
+SOURCE=..\..\include\hmac_md5.h
 # End Source File
 # Begin Source File
 
@@ -250,6 +270,10 @@ SOURCE=..\..\src\replacements\asprintf.c
 # Begin Source File
 
 SOURCE=.\iconv_replacement.c
+# End Source File
+# Begin Source File
+
+SOURCE=..\..\src\replacements\fakepoll.c
 # End Source File
 # Begin Source File
 

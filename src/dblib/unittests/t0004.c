@@ -1,12 +1,12 @@
 /* 
  * Purpose: Test retrieving data and attempting to initiate a new query with results pending
- * Functions: dbnextrow dbresults dbsqlexec 
+ * Functions: dbnextrow dbresults dbsqlexec dbgetchar 
  */
 
 #include "common.h"
+#include <ctype.h>
 
-
-static char software_version[] = "$Id: t0004.c,v 1.16 2007/12/04 02:06:38 jklowden Exp $";
+static char software_version[] = "$Id: t0004.c,v 1.21 2010/04/08 08:24:20 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 
@@ -14,12 +14,11 @@ static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 int
 main(int argc, char **argv)
 {
-	char cmd[1024];
 	const int rows_to_add = 50;
 	LOGINREC *login;
 	DBPROCESS *dbproc;
 	int i, expected_error;
-	char teststr[1024];
+	char *s, teststr[1024];
 	DBINT testint;
 	int failed = 0;
 
@@ -27,7 +26,7 @@ main(int argc, char **argv)
 
 	read_login_info(argc, argv);
 
-	fprintf(stdout, "Start\n");
+	fprintf(stdout, "Starting %s\n", argv[0]);
 	add_bread_crumb();
 
 	dbinit();
@@ -57,7 +56,7 @@ main(int argc, char **argv)
 	add_bread_crumb();
 
 	fprintf(stdout, "creating table\n");
-	dbcmd(dbproc, "create table #dblib0004 (i int not null, s char(10) not null)");
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	while (dbresults(dbproc) != NO_MORE_RESULTS) {
 		/* nop */
@@ -65,18 +64,14 @@ main(int argc, char **argv)
 
 	fprintf(stdout, "insert\n");
 	for (i = 1; i < rows_to_add; i++) {
-		sprintf(cmd, "insert into #dblib0004 values (%d, 'row %04d')", i, i);
-		fprintf(stdout, "%s\n", cmd);
-		dbcmd(dbproc, cmd);
+		sql_cmd(dbproc);
 		dbsqlexec(dbproc);
 		while (dbresults(dbproc) != NO_MORE_RESULTS) {
 			/* nop */
 		}
 	}
 
-	sprintf(cmd, "select * from #dblib0004 where i<=25 order by i");
-	fprintf(stdout, "%s\n", cmd);
-	dbcmd(dbproc, cmd);
+	sql_cmd(dbproc); /* select */
 	dbsqlexec(dbproc);
 	add_bread_crumb();
 
@@ -137,10 +132,18 @@ main(int argc, char **argv)
 
 
 	fprintf(stdout, "second select\n");
+	fprintf(stdout, "testing dbgetchar...\n");
+	for (i=0; (s = dbgetchar(dbproc, i)) != NULL; i++) {
+		putchar(*s);
+		if (!(isprint((unsigned char)*s) || iscntrl((unsigned char)*s))) {
+			fprintf(stderr, "%s:%d: dbgetchar failed with %x at position %d\n", __FILE__, __LINE__, *s, i);
+			failed = 1;
+			break;
+		}
+	}
+	fprintf(stdout, "<== end of command buffer\n");
 
-	sprintf(cmd, "select * from #dblib0004 where i>950 order by i");
-	fprintf(stdout, "%s\n", cmd);
-	if (SUCCEED != dbcmd(dbproc, cmd)) {
+	if (SUCCEED != sql_cmd(dbproc)) {
 		fprintf(stderr, "%s:%d: dbcmd failed\n", __FILE__, __LINE__);
 		failed = 1;
 	}
@@ -155,7 +158,7 @@ main(int argc, char **argv)
 	dbexit();
 	add_bread_crumb();
 
-	fprintf(stdout, "dblib %s on %s\n", (failed ? "failed!" : "okay"), __FILE__);
+	fprintf(stdout, "%s %s\n", __FILE__, (failed ? "failed!" : "OK"));
 	free_bread_crumb();
 	return failed ? 1 : 0;
 }

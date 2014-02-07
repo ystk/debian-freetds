@@ -48,7 +48,7 @@
 #include "tdssrv.h"
 #include "tdsstring.h"
 
-TDS_RCSID(var, "$Id: user.c,v 1.32 2008/01/07 14:07:21 freddy77 Exp $");
+TDS_RCSID(var, "$Id: user.c,v 1.34 2009/02/27 10:11:42 freddy77 Exp $");
 
 static TDS_POOL_USER *pool_user_find_new(TDS_POOL * pool);
 static int pool_user_login(TDS_POOL * pool, TDS_POOL_USER * puser);
@@ -109,7 +109,7 @@ pool_user_create(TDS_POOL * pool, TDS_SYS_SOCKET s, struct sockaddr_in *sin)
 
 	fprintf(stderr, "accepting connection\n");
 	len = sizeof(*sin);
-	if (TDS_IS_SOCKET_INVALID(fd = accept(s, (struct sockaddr *) sin, &len))) {
+	if (TDS_IS_SOCKET_INVALID(fd = tds_accept(s, (struct sockaddr *) sin, &len))) {
 		perror("accept");
 		return NULL;
 	}
@@ -298,17 +298,11 @@ pool_user_query(TDS_POOL * pool, TDS_POOL_USER * puser)
 	} else {
 		pmbr->state = TDS_QUERYING;
 		pool_assign_member(pmbr, puser);
-#ifdef MSG_NOSIGNAL	
 		/* cf. net.c for better technique.  */
-		ret = send(pmbr->tds->s, puser->tds->in_buf, puser->tds->in_len, MSG_NOSIGNAL);
-#else
-		/* write(pmbr->tds->s, puser->tds->in_buf, puser->tds->in_len); */
-		ret = send(pmbr->tds->s, puser->tds->in_buf, puser->tds->in_len, 0);
-#endif
+		ret = WRITESOCKET(pmbr->tds->s, puser->tds->in_buf, puser->tds->in_len);
 		/* write failed, cleanup member */
-		if (ret==-1) {
+		if (ret < 0) {
 			pool_free_member(pmbr);
 		}
-
 	}
 }

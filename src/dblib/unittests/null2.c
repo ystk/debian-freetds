@@ -4,9 +4,11 @@
 
 #include "common.h"
 
+#if HAVE_UNISTD_H
 #include <unistd.h>
+#endif /* HAVE_UNISTD_H */
 
-static char software_version[] = "$Id: null2.c,v 1.4 2007/12/14 10:23:38 freddy77 Exp $";
+static char software_version[] = "$Id: null2.c,v 1.8 2010/10/26 08:12:48 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 static DBPROCESS *dbproc = NULL;
@@ -152,7 +154,7 @@ main(int argc, char **argv)
 
 	read_login_info(argc, argv);
 
-	fprintf(stdout, "Start\n");
+	fprintf(stdout, "Starting %s\n", argv[0]);
 
 	dbinit();
 
@@ -184,10 +186,16 @@ main(int argc, char **argv)
 	test("TEXT", 1);
 
 	test("NVARCHAR(10)", 0);
-	test("NTEXT", 0);
+#ifndef DBNTWIN32
+	if (dbtds(dbproc) >= DBTDS_7_0)
+		test("NTEXT", 0);
+#endif
 
 	test("VARCHAR(MAX)", 0);
-	test("NVARCHAR(MAX)", 0);
+#ifndef DBNTWIN32
+	if (dbtds(dbproc) >= DBTDS_7_0)
+		test("NVARCHAR(MAX)", 0);
+#endif
 
 	dbexit();
 

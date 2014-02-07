@@ -1,4 +1,4 @@
-# $Id: Makefile.am,v 1.68.2.3 2008/02/29 09:23:51 freddy77 Exp $
+# $Id: Makefile.am,v 1.85 2010/12/30 18:18:11 freddy77 Exp $
 TESTS		=	\
 			t0001$(EXEEXT) t0002$(EXEEXT) t0003$(EXEEXT)\
 			t0004$(EXEEXT) connect$(EXEEXT) print$(EXEEXT)\
@@ -21,7 +21,9 @@ TESTS		=	\
 			connect2$(EXEEXT) timeout4$(EXEEXT) freeclose$(EXEEXT) \
 			cursor3$(EXEEXT) cursor4$(EXEEXT) cursor5$(EXEEXT) \
 			attributes$(EXEEXT) hidden$(EXEEXT) blob1$(EXEEXT) \
-			rowset$(EXEEXT)
+			cancel$(EXEEXT) wchar$(EXEEXT) rowset$(EXEEXT) transaction2$(EXEEXT) \
+			cursor6$(EXEEXT) cursor7$(EXEEXT) utf8$(EXEEXT) utf8_2$(EXEEXT) \
+			stats$(EXEEXT) descrec$(EXEEXT) peter$(EXEEXT) test64$(EXEEXT)
 
 check_PROGRAMS	=	$(TESTS)
 
@@ -30,6 +32,7 @@ t0002_SOURCES	=	t0002.c common.c common.h
 t0003_SOURCES	=	t0003.c common.c common.h
 t0004_SOURCES	=	t0004.c common.c common.h
 connect_SOURCES	=	connect.c common.c common.h
+connect_LDFLAGS = $(ODBCINSTLIB)
 print_SOURCES	=	print.c common.c common.h
 date_SOURCES	=	date.c common.c common.h
 norowset_SOURCES	= norowset.c common.c common.h
@@ -81,12 +84,23 @@ attributes_SOURCES	= attributes.c common.c common.h
 hidden_SOURCES	= hidden.c common.c common.h
 blob1_SOURCES	= blob1.c common.c common.h
 rowset_SOURCES	= rowset.c common.c common.h
+cancel_SOURCES = cancel.c common.c common.h
+wchar_SOURCES = wchar.c common.c common.h
+transaction2_SOURCES = transaction2.c common.c common.h
+cursor6_SOURCES	= cursor6.c common.c common.h
+cursor7_SOURCES	= cursor7.c common.c common.h
+utf8_SOURCES	= utf8.c common.c common.h
+utf8_2_SOURCES	= utf8_2.c common.c common.h
+stats_SOURCES	= stats.c common.c common.h
+descrec_SOURCES	= descrec.c common.c common.h
+peter_SOURCES	= peter.c common.c common.h
+test64_SOURCES = test64.c common.c common.h
 
 AM_CPPFLAGS	=	-I$(top_srcdir)/include $(ODBC_INC) -DFREETDS_SRCDIR=\"$(srcdir)\"
 if MINGW32
 AM_LDFLAGS	=	-no-fast-install
 else
-AM_LDFLAGS	=	-no-install
+AM_LDFLAGS	=	-no-install -L../.libs -R $(abs_builddir)/../.libs
 endif
 LIBS		=	$(ODBCLIB) $(ODBCNODMLIB) @NETWORK_LIBS@
 DISTCLEANFILES	=	odbc.ini odbcinst.ini

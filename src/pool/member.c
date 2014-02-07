@@ -59,7 +59,7 @@
 #define MAXHOSTNAMELEN 256
 #endif /* MAXHOSTNAMELEN */
 
-TDS_RCSID(var, "$Id: member.c,v 1.41 2006/12/26 14:56:20 freddy77 Exp $");
+TDS_RCSID(var, "$Id: member.c,v 1.46 2010/06/19 07:53:21 freddy77 Exp $");
 
 static int pool_packet_read(TDS_POOL_MEMBER * pmbr);
 static TDSSOCKET *pool_mbr_login(TDS_POOL * pool);
@@ -95,8 +95,8 @@ pool_mbr_login(TDS_POOL * pool)
 	tds_set_packet(login, 512);
 	context = tds_alloc_context(NULL);
 	tds = tds_alloc_socket(context, 512);
-	connection = tds_read_config_info(NULL, login, context->locale);
-	if (!connection || tds_connect(tds, connection) == TDS_FAIL) {
+	connection = tds_read_config_info(tds, login, context->locale);
+	if (!connection || tds_connect_and_login(tds, connection) != TDS_SUCCEED) {
 		tds_free_socket(tds);
 		tds_free_connection(connection);
 		/* what to do? */
@@ -105,11 +105,10 @@ pool_mbr_login(TDS_POOL * pool)
 	}
 	tds_free_connection(connection);
 	/*
-	 * FIXME -- tds_connect no longer preallocates the in_buf need to 
+	 * FIXME -- tds_connect_and_login no longer preallocates the in_buf need to 
 	 * do something like what tds_read_packet does
 	 */
-	tds->in_buf = (unsigned char *) malloc(BLOCKSIZ);
-	memset(tds->in_buf, 0, BLOCKSIZ);
+	tds->in_buf = (unsigned char *) calloc(BLOCKSIZ, 1);
 
 	if (pool->database && strlen(pool->database)) {
 		query = (char *) malloc(strlen(pool->database) + 5);
@@ -181,8 +180,7 @@ pool_mbr_init(TDS_POOL * pool)
 	/* allocate room for pool members */
 
 	pool->members = (TDS_POOL_MEMBER *)
-		malloc(sizeof(TDS_POOL_MEMBER) * pool->num_members);
-	memset(pool->members, '\0', sizeof(TDS_POOL_MEMBER) * pool->num_members);
+		calloc(pool->num_members, sizeof(TDS_POOL_MEMBER));
 
 	/* open connections for each member */
 
@@ -260,14 +258,9 @@ pool_process_members(TDS_POOL * pool, fd_set * fds)
 						pmbr->state = TDS_IDLE;
 						puser->user_state = TDS_SRV_IDLE;
 					}
-#ifdef MSG_NOSIGNAL	
 					/* cf. net.c for better technique.  */
-					ret = send(puser->tds->s, buf, tds->in_len, MSG_NOSIGNAL);
-#else
-					/* write(puser->tds->s, buf, tds->in_len); */
-					ret = send(puser->tds->s, buf, tds->in_len, 0);
-#endif
-					if (ret==-1) { /* couldn't write, ditch the user */
+					ret = WRITESOCKET(puser->tds->s, buf, tds->in_len);
+					if (ret < 0) { /* couldn't write, ditch the user */
 						fprintf(stdout, "member %d received error while writing\n",i);
 						pool_free_user(pmbr->current_user);
 						pool_deassign_member(pmbr);

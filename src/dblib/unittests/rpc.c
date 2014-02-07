@@ -5,10 +5,9 @@
 
 #include "common.h"
 
-static char software_version[] = "$Id: rpc.c,v 1.32 2007/12/04 02:06:38 jklowden Exp $";
+static char software_version[] = "$Id: rpc.c,v 1.39 2010/05/07 02:55:27 jklowden Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
-static char cmd[4096];
 static int init_proc(DBPROCESS * dbproc, const char *name);
 int ignore_err_handler(DBPROCESS * dbproc, int severity, int dberr, int oserr, char *dberrstr, char *oserrstr);
 int ignore_msg_handler(DBPROCESS * dbproc, DBINT msgno, int state, int severity, char *text, char *server, char *proc, int line);
@@ -27,6 +26,7 @@ static const char procedure_sql[] =
 			", @nullout int OUTPUT\n"
 			", @nrows int OUTPUT \n"
 			", @c varchar(20)\n"
+			", @nv nvarchar(20) = N'hello'\n"
 		"AS \n"
 		"BEGIN \n"
 			"select @null_input = max(convert(varchar(30), name)) from systypes \n"
@@ -35,7 +35,7 @@ static const char procedure_sql[] =
 			"select distinct convert(varchar(30), name) as 'type'  from systypes \n"
 				"where name in ('int', 'char', 'text') \n"
 			"select @nrows = @@rowcount \n"
-			"select distinct convert(varchar(30), name) as name  from sysobjects where type = 'S' \n"
+			"select distinct @nv as '@nv', convert(varchar(30), name) as name  from sysobjects where type = 'S' \n"
 			"return 42 \n"
 		"END \n";
 
@@ -47,8 +47,7 @@ init_proc(DBPROCESS * dbproc, const char *name)
 	if (name[0] != '#') {
 		fprintf(stdout, "Dropping procedure %s\n", name);
 		add_bread_crumb();
-		sprintf(cmd, "DROP PROCEDURE %s", name);
-		dbcmd(dbproc, cmd);
+		sql_cmd(dbproc);
 		add_bread_crumb();
 		dbsqlexec(dbproc);
 		add_bread_crumb();
@@ -59,8 +58,7 @@ init_proc(DBPROCESS * dbproc, const char *name)
 	}
 
 	fprintf(stdout, "Creating procedure %s\n", name);
-	sprintf(cmd, procedure_sql, name);
-	dbcmd(dbproc, cmd);
+	sql_cmd(dbproc);
 	if ((ret = dbsqlexec(dbproc)) == FAIL) {
 		add_bread_crumb();
 		if (name[0] == '#')
@@ -123,6 +121,32 @@ ignore_err_handler(DBPROCESS * dbproc, int severity, int dberr, int oserr, char 
 	return erc;
 }
 
+static int 
+colwidth( DBPROCESS * dbproc, int icol ) 
+{
+	int width = dbwillconvert(dbcoltype(dbproc, icol), SYBCHAR);
+	return 255 == width? dbcollen(dbproc, icol) : width;
+}
+
+char param_data1[64];
+int param_data2, param_data3;
+
+struct parameters_t {
+	char         *name;
+	BYTE         status;
+	int          type;
+	DBINT        maxlen;
+	DBINT        datalen;
+	BYTE         *value;
+} bindings[] = 
+	{ { "@null_input", DBRPCRETURN, SYBCHAR,  -1,   0, NULL }
+	, { "@first_type", DBRPCRETURN, SYBCHAR,  sizeof(param_data1), 0, (BYTE *) &param_data1 }
+	, { "@nullout",    DBRPCRETURN, SYBINT4,  -1,   0, (BYTE *) &param_data2 }
+	, { "@nrows",      DBRPCRETURN, SYBINT4,  -1,  -1, (BYTE *) &param_data3 }
+	, { "@c",          0,        SYBVARCHAR,   0,   0, NULL }
+	, { "@nv",         0,        SYBVARCHAR,  -1,   2, (BYTE *) "OK:" }
+	}, *pb = bindings;
+
 int
 main(int argc, char **argv)
 {
@@ -130,29 +154,20 @@ main(int argc, char **argv)
 	DBPROCESS *dbproc;
 	RETPARAM save_param;
 	
-	int i, r;
 	char teststr[1024];
-	int failed = 0;
 	char *retname = NULL;
-	int rettype = 0, retlen = 0;
-	int return_status = 0;
-	char proc[] = "#t0022", 
-	     param0[] = "@null_input", 
-	     param1[] = "@first_type", 
-	     param2[] = "@nullout",
-	     param3[] = "@nrows",
-	     param4[] = "@c";
+	int i, failed = 0;
+	int rettype = 0, retlen = 0, return_status = 0;
+	char proc[] = "#t0022";
 	char *proc_name = proc;
 
-	char param_data1[64];
-	int param_data2;
-	int param_data3;
+	int num_resultset = 0, num_empty_resultset = 0;
+
+	static const char dashes30[] = "------------------------------";
+	static const char  *dashes5 = dashes30 + (sizeof(dashes30) - 5), 
+			  *dashes15 = dashes30 + (sizeof(dashes30) - 15);
+
 	RETCODE erc, row_code;
-	int num_resultset = 0;
-	int num_empty_resultset = 0;
-	static const char dashes5[]  = "-----", 
-			  dashes15[] = "---------------", 
-			  dashes30[] = "------------------------------";
 
 	set_malloc_options();
 	
@@ -160,7 +175,7 @@ main(int argc, char **argv)
 
 	read_login_info(argc, argv);
 
-	fprintf(stdout, "Start\n");
+	fprintf(stdout, "Starting %s\n", argv[0]);
 	add_bread_crumb();
 
 	dbinit();
@@ -212,51 +227,23 @@ main(int argc, char **argv)
 	printf("executing dbrpcinit\n");
 	erc = dbrpcinit(dbproc, proc_name, 0);	/* no options */
 	if (erc == FAIL) {
-		fprintf(stderr, "Failed: dbrpcinit\n");
+		fprintf(stderr, "Failed line %d: dbrpcinit\n", __LINE__);
 		failed = 1;
 	}
 
-	printf("executing dbrpcparam\n");
-	erc = dbrpcparam(dbproc, param0, DBRPCRETURN, SYBCHAR, /*maxlen= */ -1, /* datlen= */ 0, NULL);
-	if (erc == FAIL) {
-		fprintf(stderr, "Failed: dbrpcparam\n");
-		failed = 1;
-	}
+	for (pb = bindings; pb < bindings + sizeof(bindings)/sizeof(bindings[0]); pb++) {
+		printf("executing dbrpcparam for %s\n", pb->name);
+		if ((erc = dbrpcparam(dbproc, pb->name, pb->status, pb->type, pb->maxlen, pb->datalen, pb->value)) == FAIL) {
+			fprintf(stderr, "Failed line %d: dbrpcparam\n", __LINE__);
+			failed++;
+		}
 
-	printf("executing dbrpcparam\n");
-	erc = dbrpcparam(dbproc, param1, DBRPCRETURN, SYBCHAR, /*maxlen= */ sizeof(param_data1), /* datlen= */ 0, (BYTE *) & param_data1);
-	if (erc == FAIL) {
-		fprintf(stderr, "Failed: dbrpcparam\n");
-		failed = 1;
 	}
-
-	printf("executing dbrpcparam\n");
-	erc = dbrpcparam(dbproc, param2, DBRPCRETURN, SYBINT4, /*maxlen= */ -1, /* datalen= */ 0, (BYTE *) & param_data2);
-	if (erc == FAIL) {
-		fprintf(stderr, "Failed: dbrpcparam\n");
-		failed = 1;
-	}
-
-	printf("executing dbrpcparam\n");
-	erc = dbrpcparam(dbproc, param3, DBRPCRETURN, SYBINT4, /*maxlen= */ -1, /* datalen= */ -1, (BYTE *) & param_data3);
-	if (erc == FAIL) {
-		fprintf(stderr, "Failed: dbrpcparam\n");
-		failed = 1;
-	}
-
-	/* test for strange parameters using input */
-	printf("executing dbrpcparam\n");
-	erc = dbrpcparam(dbproc, param4, 0, SYBVARCHAR, /*maxlen= */ 0, /* datalen= */ 0, NULL);
-	if (erc == FAIL) {
-		fprintf(stderr, "Failed: dbrpcparam\n");
-		failed = 1;
-	}
-
 	printf("executing dbrpcsend\n");
 	param_data3 = 0x11223344;
 	erc = dbrpcsend(dbproc);
 	if (erc == FAIL) {
-		fprintf(stderr, "Failed: dbrpcsend\n");
+		fprintf(stderr, "Failed line %d: dbrpcsend\n", __LINE__);
 		exit(1);
 	}
 
@@ -264,27 +251,47 @@ main(int argc, char **argv)
 	printf("executing dbsqlok\n");
 	erc = dbsqlok(dbproc);
 	if (erc == FAIL) {
-		fprintf(stderr, "Failed: dbsqlok\n");
+		fprintf(stderr, "Failed line %d: dbsqlok\n", __LINE__);
 		exit(1);
 	}
 
 	add_bread_crumb();
 
 	/* retrieve outputs per usual */
-	r = 0;
+	printf("fetching results\n");
 	while ((erc = dbresults(dbproc)) != NO_MORE_RESULTS) {
+		printf("fetched resultset %d %s:\n", 1+num_resultset, erc==SUCCEED? "successfully":"unsuccessfully");
 		if (erc == SUCCEED) { 
-			const int ncols = dbnumcols(dbproc);
-			int empty_resultset = 1;
+			const int ncol = dbnumcols(dbproc);
+			int empty_resultset = 1, c;
+			enum {buflen=1024, nbuf=5};
+			char bound_buffers[nbuf][buflen] = { "one", "two", "three", "four", "five" };
+
 			++num_resultset;
-			printf("bound 1 of %d columns ('%s') in result %d.\n", ncols, dbcolname(dbproc, 1), ++r);
-			dbbind(dbproc, 1, STRINGBIND, 0, (BYTE *) teststr);
 			
-			printf("\t%s\n\t-----------\n", dbcolname(dbproc, 1));
+			for( c=0; c < ncol && c < nbuf; c++ ) {
+				printf("column %d (%s) is %d wide, ", c+1, dbcolname(dbproc, c+1), colwidth(dbproc, c+1));
+				printf("buffer initialized to '%s'\n", bound_buffers[c]);
+			}
+			for( c=0; c < ncol && c < nbuf; c++ ) {
+				erc = dbbind(dbproc, c+1, STRINGBIND, 0, (BYTE *) bound_buffers[c]);
+				if (erc == FAIL) {
+					fprintf(stderr, "Failed line %d: dbbind\n", __LINE__);
+					exit(1);
+				}
+
+				printf("%-*s ", colwidth(dbproc, c+1), dbcolname(dbproc, c+1));
+			}
+			printf("\n");
+
 			while ((row_code = dbnextrow(dbproc)) != NO_MORE_ROWS) {
 				empty_resultset = 0;
 				if (row_code == REG_ROW) {
-					printf("\t%s\n", teststr);
+					int c;
+					for( c=0; c < ncol && c < nbuf; c++ ) {
+						printf("%-*s ", colwidth(dbproc, c+1), bound_buffers[c]);
+					}
+					printf("\n");
 				} else {
 					/* not supporting computed rows in this unit test */
 					failed = 1;
@@ -335,8 +342,8 @@ main(int argc, char **argv)
 	/* 
 	 * Test the last parameter for expected outcome 
 	 */
-	if ((save_param.name == NULL) || strcmp(save_param.name, param3)) {
-		fprintf(stderr, "Expected retname to be '%s', got ", param3);
+	if ((save_param.name == NULL) || strcmp(save_param.name, bindings[3].name)) {
+		fprintf(stderr, "Expected retname to be '%s', got ", bindings[3].name);
 		if (save_param.name == NULL) 
 			fprintf(stderr, "<NULL> instead.\n");
 		else
@@ -365,8 +372,8 @@ main(int argc, char **argv)
 
 
 	/* Test number of result sets */
-	if (num_resultset != 3) {
-		fprintf(stderr, "Expected 3 resultset got %d.\n", num_resultset);
+	if (num_resultset != 4) {
+		fprintf(stderr, "Expected 4 resultset got %d.\n", num_resultset);
 		exit(1);
 	}
 	if (num_empty_resultset != 1) {
@@ -380,8 +387,7 @@ main(int argc, char **argv)
 
 	fprintf(stdout, "Dropping procedure\n");
 	add_bread_crumb();
-	sprintf(cmd, "DROP PROCEDURE %s", proc_name);
-	dbcmd(dbproc, cmd);
+	sql_cmd(dbproc);
 	add_bread_crumb();
 	dbsqlexec(dbproc);
 	add_bread_crumb();
@@ -392,7 +398,7 @@ main(int argc, char **argv)
 	dbexit();
 	add_bread_crumb();
 
-	fprintf(stdout, "dblib %s on %s\n", (failed ? "failed!" : "okay"), __FILE__);
+	fprintf(stdout, "%s %s\n", __FILE__, (failed ? "failed!" : "OK"));
 	free_bread_crumb();
 
 	free(save_param.name);

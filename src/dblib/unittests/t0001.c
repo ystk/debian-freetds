@@ -5,7 +5,7 @@
 
 #include "common.h"
 
-static char software_version[] = "$Id: t0001.c,v 1.26 2007/12/04 02:06:38 jklowden Exp $";
+static char software_version[] = "$Id: t0001.c,v 1.29 2009/02/27 15:52:48 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 
@@ -26,10 +26,12 @@ main(int argc, char **argv)
 	set_malloc_options();
 
 	read_login_info(argc, argv);
-	argc -= optind;
-	argv += optind;
+	if (argc > 1) {
+		argc -= optind;
+		argv += optind;
+	}
 
-	fprintf(stdout, "Start\n");
+	fprintf(stdout, "Starting %s\n", argv[0]);
 	add_bread_crumb();
 
 	/* Fortify_EnterScope(); */
@@ -80,36 +82,20 @@ main(int argc, char **argv)
 #ifdef DBQUOTEDIDENT
 	fprintf(stdout, "QUOTED_IDENTIFIER is %s\n", (dbisopt(dbproc, DBQUOTEDIDENT, NULL))? "ON":"OFF");
 #endif
-	
-	fprintf(stdout, "creating table\n");
-	dbcmd(dbproc, "create table #dblib0001 (i int not null, s char(10) not null)");
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	while (dbresults(dbproc) == SUCCEED) {
 		/* nop */
 	}
 
-	fprintf(stdout, "insert\n");
-	for (i = 0; i < rows_to_add; i++) {
-		char cmd[1024];
-
-#ifdef DBQUOTEDIDENT
-		if(dbisopt(dbproc, DBQUOTEDIDENT, NULL)) 
-			sprintf(cmd, "insert into #dblib0001 values (%d, 'row %03d')", i, i);
-		else
-			sprintf(cmd, "insert into #dblib0001 values (%d, \"row %03d\")", i, i);
-#else
-		sprintf(cmd, "insert into #dblib0001 values (%d, 'row %03d')", i, i);
-#endif
-		fprintf(stdout, "%s\n", cmd);
-		dbcmd(dbproc, cmd);
+	for (i = 0; i < rows_to_add && sql_cmd(dbproc) == SUCCEED; i++) {
 		dbsqlexec(dbproc);
 		while (dbresults(dbproc) == SUCCEED) {
 			/* nop */
 		}
 	}
 
-	fprintf(stdout, "select\n");
-	dbcmd(dbproc, "select * from #dblib0001 order by i");
+	sql_cmd(dbproc);
 	dbsqlexec(dbproc);
 	add_bread_crumb();
 
@@ -117,7 +103,7 @@ main(int argc, char **argv)
 	if (dbresults(dbproc) != SUCCEED) {
 		add_bread_crumb();
 		failed = 1;
-		fprintf(stdout, "Was expecting a result set.\n");
+		fprintf(stderr, "error: expected a result set, none returned.\n");
 		exit(1);
 	}
 	add_bread_crumb();
@@ -184,7 +170,7 @@ main(int argc, char **argv)
 	dbexit();
 	add_bread_crumb();
 
-	fprintf(stdout, "dblib %s on %s\n", (failed ? "failed!" : "okay"), __FILE__);
+	fprintf(stdout, "%s %s\n", __FILE__, (failed ? "failed!" : "OK"));
 	free_bread_crumb();
 	return failed ? 1 : 0;
 }

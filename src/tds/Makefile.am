@@ -1,20 +1,29 @@
-# $Id: Makefile.am,v 1.63 2007/10/30 15:51:06 freddy77 Exp $
+# $Id: Makefile.am,v 1.72.2.1 2011/04/22 14:14:16 freddy77 Exp $
 
 SUBDIRS			=	unittests
 AM_CPPFLAGS		=	-I$(top_srcdir)/include
 
 noinst_LTLIBRARIES	=	libtds.la
+if HAVE_SSPI
+AUTH_FILES_DIST	= challenge.c md4.c md5.c des.c gssapi.c hmac_md5.c
+AUTH_FILES	= sspi.c
+else
+AUTH_FILES	= challenge.c md4.c md5.c des.c gssapi.c hmac_md5.c
+AUTH_FILES_DIST	= sspi.c
+endif
 libtds_la_SOURCES=	mem.c token.c util.c login.c read.c \
 	write.c convert.c numeric.c config.c query.c iconv.c \
-	locale.c challenge.c threadsafe.c vstrbuild.c md4.c md5.c \
-	des.c tdsstring.c getmac.c data.c net.c \
+	locale.c threadsafe.c vstrbuild.c \
+	tdsstring.c getmac.c data.c net.c \
 	tds_checks.c tds_checks.h enum_cap.h log.c \
-	gssapi.c
+	bulk.c win_mutex.c \
+	$(AUTH_FILES)
 libtds_la_LDFLAGS=
 libtds_la_LIBADD=
 
-noinst_HEADERS		= tds_willconvert.h encodings.h num_limits.h
-EXTRA_DIST		= tds_willconvert.h encodings.h num_limits.h
+noinst_HEADERS		= tds_willconvert.h encodings.h num_limits.h tds_types.h
+EXTRA_DIST		= tds_willconvert.h encodings.h num_limits.h tds_types.h \
+	TDS.vcproj ptw32_MCS_lock.c $(AUTH_FILES_DIST)
 
 if HAVE_DOXYGEN
 doxyfile: $(srcdir)/tds.dox
@@ -35,11 +44,13 @@ endif
 ## We have to build num_limits.h because automake can't infer the
 ## dependency (on num_limits.pl).  
 
+data.c:	tds_types.h
+
 if HAVE_PERL_SOURCES
-BUILT_SOURCES = tds_willconvert.h encodings.h num_limits.h
+BUILT_SOURCES = tds_willconvert.h encodings.h num_limits.h tds_types.h
 
 clean-local: 
-	cd $(srcdir) && rm -f $(EXTRA_DIST)
+	cd $(srcdir) && rm -f $(BUILT_SOURCES)
 	
 tds_willconvert.h: tds_willconvert.pl Makefile
 	perl $(srcdir)/tds_willconvert.pl > $@.tmp
@@ -51,5 +62,9 @@ encodings.h: encodings.pl alternative_character_sets.h Makefile
 
 num_limits.h: num_limits.pl Makefile
 	perl $(srcdir)/num_limits.pl > $@.tmp
+	mv $@.tmp $@
+
+tds_types.h: types.pl Makefile ../../misc/types.txt
+	perl $(srcdir)/types.pl < $(srcdir)/../../misc/types.txt > $@.tmp
 	mv $@.tmp $@
 endif

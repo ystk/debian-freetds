@@ -47,10 +47,9 @@ desc_alloc(SQLHANDLE parent, int desc_type, int alloc_type)
 {
 	TDS_DESC *desc;
 
-	desc = (TDS_DESC *) malloc(sizeof(TDS_DESC));
+	desc = (TDS_DESC *) calloc(1, sizeof(TDS_DESC));
 	if (!desc)
 		return NULL;
-	memset(desc, 0, sizeof(TDS_DESC));
 
 	/* set defualt header values */
 	desc->htype = SQL_HANDLE_DESC;
@@ -214,3 +213,13 @@ desc_free(TDS_DESC * desc)
 	}
 	return SQL_SUCCESS;
 }
+
+TDS_DBC *
+desc_get_dbc(TDS_DESC *desc)
+{
+	if (IS_HSTMT(desc->parent))
+		return ((TDS_STMT *) desc->parent)->dbc;
+
+	return (TDS_DBC *) desc->parent;
+}
+

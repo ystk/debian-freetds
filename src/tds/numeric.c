@@ -1,6 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998-1999  Brian Bruns
- * Copyright (C) 2005  Frediano Ziglio
+ * Copyright (C) 2005-2010  Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -37,7 +37,7 @@
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: numeric.c,v 1.42 2006/12/26 14:56:21 freddy77 Exp $");
+TDS_RCSID(var, "$Id: numeric.c,v 1.47 2010/12/28 14:37:10 freddy77 Exp $");
 
 /* 
  * these routines use arrays of unsigned char to handle arbitrary
@@ -63,8 +63,8 @@ const int tds_numeric_bytes_per_prec[] = {
 	 * core if for some bug it's 0...
 	 */
 	1, 
-	2, 2, 3, 3, 4, 4, 4, 5, 5,
-	6, 6, 6, 7, 7, 8, 8, 9, 9, 9,
+	2,  2,  3,  3,  4,  4,  4,  5,  5,
+	6,  6,  6,  7,  7,  8,  8,  9,  9,  9,
 	10, 10, 11, 11, 11, 12, 12, 13, 13, 14,
 	14, 14, 15, 15, 16, 16, 16, 17, 17, 18,
 	18, 19, 19, 19, 20, 20, 21, 21, 21, 22,
@@ -72,6 +72,21 @@ const int tds_numeric_bytes_per_prec[] = {
 	26, 27, 27, 28, 28, 28, 29, 29, 30, 30,
 	31, 31, 31, 32, 32, 33, 33, 33
 };
+
+#if ENABLE_EXTRA_CHECKS
+
+#if defined(__GNUC__) && __GNUC__ >= 2
+#define COMPILE_CHECK(name,check) \
+    extern int name[(check)?1:-1] __attribute__ ((unused))
+#else
+#define COMPILE_CHECK(name,check) \
+    extern int name[(check)?1:-1]
+#endif
+
+COMPILE_CHECK(maxprecision, 
+	MAXPRECISION < TDS_VECTOR_SIZE(tds_numeric_bytes_per_prec) );
+
+#endif
 
 /*
  * money is a special case of numeric really...that why its here
@@ -101,16 +116,7 @@ tds_money_to_string(const TDS_MONEY * money, char *s)
 	frac = (int) (n % 100);
 	n /= 100;
 	/* if machine is 64 bit you do not need to split n */
-#if defined(TDS_I64_FORMAT)
-	sprintf(p, "%" TDS_I64_FORMAT ".%02d", n, frac);
-#elif SIZEOF_LONG < 8
-	if (n >= 1000000000) {
-		sprintf(p, "%ld%09ld.%02d", (long)(n / 1000000000), (long)(n % 1000000000), frac);
-	} else
-		sprintf(p, "%ld.%02d", (long)n, frac);
-#else
-	sprintf(p, "%ld.%02d", (long)n, frac);
-#endif
+	sprintf(p, "%" PRId64 ".%02d", n, frac);
 	return s;
 #else
 	unsigned char multiplier[MAXPRECISION], temp[MAXPRECISION];
@@ -308,7 +314,7 @@ tds_numeric_to_string(const TDS_NUMERIC * numeric, char *s)
 	}
 
 	/* transform to 10 base number and output */
-	i = 4 * ((packet10k + TDS_VECTOR_SIZE(packet10k)) - p);	/* current digit */
+	i = 4 * (unsigned int)((packet10k + TDS_VECTOR_SIZE(packet10k)) - p);	/* current digit */
 	/* skip leading zeroes */
 	n = 1000;
 	remainder = *p;
@@ -351,26 +357,26 @@ tds_numeric_to_string(const TDS_NUMERIC * numeric, char *s)
 #endif
 
 /* include to check limits */
+
 #include "num_limits.h"
 
 static int
 tds_packet_check_overflow(TDS_WORD *packet, unsigned int packet_len, unsigned int prec)
 {
-	unsigned int i;
-	int l, stop;
+	unsigned int i, len, stop;
 	const TDS_WORD *limit = &limits[limit_indexes[prec] + LIMIT_INDEXES_ADJUST * prec];
-	l = limit_indexes[prec+1] - limit_indexes[prec] + LIMIT_INDEXES_ADJUST;
+	len = limit_indexes[prec+1] - limit_indexes[prec] + LIMIT_INDEXES_ADJUST;
 	stop = prec / (sizeof(TDS_WORD) * 8);
 	/*
 	 * Now a number is
 	 * ... P[3] P[2] P[1] P[0]
 	 * while upper limit + 1 is
- 	 * zeroes limit[0 .. l-1] 0[0 .. stop-1]
+ 	 * zeroes limit[0 .. len-1] 0[0 .. stop-1]
 	 * we must assure that number < upper limit + 1
 	 */
-	if (packet_len >= l + stop) {
+	if (packet_len >= len + stop) {
 		/* higher packets must be zero */
-		for (i = packet_len; --i >= l + stop; )
+		for (i = packet_len; --i >= len + stop; )
 			if (packet[i] > 0)
 				return TDS_CONVERT_OVERFLOW;
 		/* test limit */

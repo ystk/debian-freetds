@@ -2,30 +2,33 @@
 
 /* Test for executing SQLExecute and rebinding parameters */
 
-static char software_version[] = "$Id: rebindpar.c,v 1.6 2004/12/01 13:11:35 freddy77 Exp $";
+static char software_version[] = "$Id: rebindpar.c,v 1.10 2010/07/05 09:20:33 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
+#define SWAP_STMT(b) do { SQLHSTMT xyz = odbc_stmt; odbc_stmt = b; b = xyz; } while(0)
+
+static HSTMT stmt;
+
 static void
-TestInsert(HSTMT stmt, char *buf)
+TestInsert(char *buf)
 {
 	SQLLEN ind;
 	int l = strlen(buf);
 	char sql[200];
 
 	/* insert some data and test success */
-	if (SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, l, 0, buf, l, &ind) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Unable to bind");
+	CHKBindParameter(1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, l, 0, buf, l, &ind, "S");
 
 	ind = l;
-	if (SQLExecute(stmt) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Unable to execute");
+	CHKExecute("S");
 
+	SWAP_STMT(stmt);
 	sprintf(sql, "SELECT 1 FROM #tmp1 WHERE c = '%s'", buf);
-	Command(Statement, sql);
-	if (SQLFetch(Statement) != SQL_SUCCESS || SQLFetch(Statement) != SQL_NO_DATA || SQLMoreResults(Statement) != SQL_NO_DATA) {
-		fprintf(stderr, "One row expected!\n");
-		exit(1);
-	}
+	odbc_command(sql);
+	CHKFetch("S");
+	CHKFetch("No");
+	CHKMoreResults("No");
+	SWAP_STMT(stmt);
 }
 
 static void
@@ -34,48 +37,46 @@ Test(int prebind)
 	SQLLEN ind;
 	int i;
 	char buf[100];
-	HSTMT stmt;
 
 	/* build a string longer than 80 character (80 it's the default) */
 	buf[0] = 0;
 	for (i = 0; i < 21; ++i)
 		strcat(buf, "miao");
 
-	Command(Statement, "DELETE FROM #tmp1");
+	odbc_command("DELETE FROM #tmp1");
 
-	if (SQLAllocStmt(Connection, &stmt) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Unable to allocate statement");
+	CHKAllocStmt(&stmt, "S");
 
+	SWAP_STMT(stmt);
 	if (prebind)
-		if (SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, 1, 0, buf, 1, &ind) != SQL_SUCCESS)
-			ODBC_REPORT_ERROR("Unable to bind");
+		CHKBindParameter(1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, 1, 0, buf, 1, &ind, "S");
 
-	if (SQLPrepare(stmt, (SQLCHAR *) "INSERT INTO #tmp1(c) VALUES(?)", SQL_NTS) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Unable to prepare statement");
+	CHKPrepare((SQLCHAR *) "INSERT INTO #tmp1(c) VALUES(?)", SQL_NTS, "S");
 
-	/* try to insert al empty string, should not fail */
+	/* try to insert an empty string, should not fail */
 	/* NOTE this is currently the only test for insert a empty string using rpc */
-	if (db_is_microsoft())
-		TestInsert(stmt, "");
-	TestInsert(stmt, "a");
-	TestInsert(stmt, "bb");
-	TestInsert(stmt, buf);
+	if (odbc_db_is_microsoft())
+		TestInsert("");
+	TestInsert("a");
+	TestInsert("bb");
+	TestInsert(buf);
 
-	if (SQLFreeStmt(stmt, SQL_DROP) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Unable to free statement");
+	CHKFreeStmt(SQL_DROP, "S");
+	odbc_stmt = SQL_NULL_HSTMT;
+	SWAP_STMT(stmt);
 }
 
 int
 main(int argc, char *argv[])
 {
-	Connect();
+	odbc_connect();
 
-	Command(Statement, "CREATE TABLE #tmp1 (c VARCHAR(200))");
+	odbc_command("CREATE TABLE #tmp1 (c VARCHAR(200))");
 
 	Test(1);
 	Test(0);
 
-	Disconnect();
+	odbc_disconnect();
 
 	printf("Done.\n");
 	return 0;

@@ -13,7 +13,7 @@
 
 #include "bcp.h"
 
-static char software_version[] = "$Id: bcp.c,v 1.14 2007/11/26 08:52:40 freddy77 Exp $";
+static char software_version[] = "$Id: bcp.c,v 1.18 2009/02/27 15:52:48 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 static char cmd[512];
@@ -23,20 +23,20 @@ static void test_bind(DBPROCESS * dbproc);
 /*
  * Static data for insertion
  */
-int not_null_bit = 1;
-char not_null_char[] = "a char";
-char not_null_varchar[] = "a varchar";
-char not_null_datetime[] 		= "Dec 17 2003  3:44PM";
-char not_null_smalldatetime[] 	= "Dec 17 2003  3:44PM";
-char not_null_money[] = "12.34";
-char not_null_smallmoney[] = "12.34";
-char not_null_float[] = "12.34";
-char not_null_real[] = "12.34";
-char not_null_decimal[] = "12.34";
-char not_null_numeric[] = "12.34";
-int not_null_int        = 1234;
-int not_null_smallint   = 1234;
-int not_null_tinyint    = 123;
+static int not_null_bit = 1;
+static char not_null_char[] = "a char";
+static char not_null_varchar[] = "a varchar";
+static char not_null_datetime[] 		= "Dec 17 2003  3:44PM";
+static char not_null_smalldatetime[] 	= "Dec 17 2003  3:44PM";
+static char not_null_money[] = "12.34";
+static char not_null_smallmoney[] = "12.34";
+static char not_null_float[] = "12.34";
+static char not_null_real[] = "12.34";
+static char not_null_decimal[] = "12.34";
+static char not_null_numeric[] = "12.34";
+static int not_null_int        = 1234;
+static int not_null_smallint   = 1234;
+static int not_null_tinyint    = 123;
 
 
 static int
@@ -46,9 +46,7 @@ init(DBPROCESS * dbproc, const char *name)
 	RETCODE rc;
 
 	fprintf(stdout, "Dropping %s.%s..%s\n", SERVER, DATABASE, name);
-	add_bread_crumb();
-	sprintf(cmd, "if exists (select 1 from sysobjects where type = 'U' and name = '%s') drop table %s", name, name);
-	dbcmd(dbproc, cmd);
+	sql_cmd(dbproc);
 	add_bread_crumb();
 	dbsqlexec(dbproc);
 	add_bread_crumb();
@@ -60,14 +58,9 @@ init(DBPROCESS * dbproc, const char *name)
 	add_bread_crumb();
 
 	fprintf(stdout, "Creating %s.%s..%s\n", SERVER, DATABASE, name);
+	sql_cmd(dbproc);
+	sql_cmd(dbproc);
 
-	dbcmd(dbproc, create_table_sql);
-#if 1
-	dbfcmd(dbproc, 	"select colid, cast(c.name as varchar(30)) as name, c.length "
-			", '  '+ substring('NY', convert(bit,(c.status & 8))+1,1) as Nulls " 
-			"from syscolumns as c left join systypes as t on c.usertype = t.usertype "
-			"where c.id = object_id('%s') order by colid", name );
-#endif
 	if (dbsqlexec(dbproc) == FAIL) {
 		add_bread_crumb();
 		res = 1;
@@ -189,7 +182,7 @@ main(int argc, char **argv)
 
 	read_login_info(argc, argv);
 
-	fprintf(stdout, "Start\n");
+	fprintf(stdout, "Starting %s\n", argv[0]);
 	add_bread_crumb();
 
 	dbinit();
@@ -276,23 +269,9 @@ main(int argc, char **argv)
 	printf("done\n");
 
 	add_bread_crumb();
-#if 0
-	fprintf(stdout, "select * from %s\n", table_name);
-	dbfcmd(dbproc, "select * from %s\n", table_name);
-#endif
+
 #if 1
-	dbfcmd(dbproc, 	"select   'nullable_char' as col, count(*) nrows"
-				", datalength(nullable_char) as len, nullable_char as value "
-			"from %s group by nullable_char\n", table_name);
-	dbfcmd(dbproc, 	"UNION\n"
-			"select   'nullable_varchar' as col, count(*) nrows"
-				", datalength(nullable_varchar) as len, nullable_varchar as value "
-			"from %s group by nullable_varchar\n", table_name);
-	dbfcmd(dbproc, 	"UNION\n"
-			"select   'nullable_int' as col, count(*) nrows"
-				", datalength(nullable_int) as len, cast(nullable_int as varchar(6))as value "
-			"from %s group by nullable_int\n", table_name);
-	dbfcmd(dbproc, "order by col, len, nrows\n");
+	sql_cmd(dbproc);
 
 	dbsqlexec(dbproc);
 	while ((i=dbresults(dbproc)) == SUCCEED) {
@@ -308,8 +287,7 @@ main(int argc, char **argv)
 	} else {
 		fprintf(stdout, "Dropping table %s\n", table_name);
 		add_bread_crumb();
-		sprintf(cmd, "drop table %s", table_name);
-		dbcmd(dbproc, cmd);
+		sql_cmd(dbproc);
 		add_bread_crumb();
 		dbsqlexec(dbproc);
 		add_bread_crumb();
@@ -323,7 +301,7 @@ main(int argc, char **argv)
 
 	failed = 0;
 
-	fprintf(stdout, "dblib %s on %s\n", (failed ? "failed!" : "okay"), __FILE__);
+	fprintf(stdout, "%s %s\n", __FILE__, (failed ? "failed!" : "OK"));
 	free_bread_crumb();
 	return failed ? 1 : 0;
 }

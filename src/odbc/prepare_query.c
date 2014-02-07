@@ -1,6 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004  Brian Bruns
- * Copyright (C) 2005  Frediano Ziglio
+ * Copyright (C) 2005-2008  Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -43,7 +43,7 @@
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: prepare_query.c,v 1.64 2007/04/18 14:29:24 freddy77 Exp $");
+TDS_RCSID(var, "$Id: prepare_query.c,v 1.79 2009/12/02 22:58:21 jklowden Exp $");
 
 #define TDS_ISSPACE(c) isspace((unsigned char) (c))
 
@@ -112,6 +112,7 @@ prepared_rpc(struct _hstmt *stmt, int compute_row)
 				curcol->column_cur_size = curcol->column_size;
 				break;
 			}
+			curcol->on_server.column_size = curcol->column_size;
 			/* TODO support other type other than VARCHAR, do not strip escape in prepare_call */
 			if (compute_row) {
 				char *dest;
@@ -169,7 +170,7 @@ prepared_rpc(struct _hstmt *stmt, int compute_row)
 				return SQL_ERROR;
 			}
 
-			switch (sql2tds
+			switch (odbc_sql2tds
 				(stmt, &stmt->ipd->records[stmt->param_num - 1], &stmt->apd->records[stmt->param_num - 1],
 				 curcol, compute_row, stmt->apd, stmt->curr_param_row)) {
 			case SQL_ERROR:
@@ -199,10 +200,15 @@ parse_prepared_query(struct _hstmt *stmt, int compute_row)
 	if (stmt->prepared_pos)
 		return prepared_rpc(stmt, compute_row);
 
+	tdsdump_log(TDS_DBG_FUNC, "parsing %d parameters\n", nparam);
+
 	for (; stmt->param_num <= stmt->param_count; ++nparam, ++stmt->param_num) {
-		/* find binded parameter */
+		/* find bound parameter */
 		if (stmt->param_num > stmt->apd->header.sql_desc_count || stmt->param_num > stmt->ipd->header.sql_desc_count) {
-			/* TODO set error */
+			tdsdump_log(TDS_DBG_FUNC, "parse_prepared_query: logic_error: parameter out of bounds: "
+						  "%d > %d || %d > %d\n",
+						   stmt->param_num, stmt->apd->header.sql_desc_count,
+						   stmt->param_num, stmt->ipd->header.sql_desc_count);
 			return SQL_ERROR;
 		}
 
@@ -213,7 +219,7 @@ parse_prepared_query(struct _hstmt *stmt, int compute_row)
 		}
 		stmt->params = temp_params;
 
-		switch (sql2tds
+		switch (odbc_sql2tds
 			(stmt, &stmt->ipd->records[stmt->param_num - 1], &stmt->apd->records[stmt->param_num - 1],
 			 stmt->params->columns[nparam], compute_row, stmt->apd, stmt->curr_param_row)) {
 		case SQL_ERROR:
@@ -237,6 +243,48 @@ start_parse_prepared_query(struct _hstmt *stmt, int compute_row)
 	return parse_prepared_query(stmt, compute_row);
 }
 
+static TDS_INT
+odbc_wchar2hex(TDS_CHAR *dest, TDS_UINT destlen, const SQLWCHAR * src, TDS_UINT srclen)
+{
+	unsigned int i;
+	SQLWCHAR hex1, c = 0;
+
+	/* if srclen if odd we must add a "0" before ... */
+	i = 0;		/* number where to start converting */
+	if (srclen & 1) {
+		++srclen;
+		i = 1;
+		--src;
+	}
+	for (; i < srclen; ++i) {
+		hex1 = src[i];
+
+		if ('0' <= hex1 && hex1 <= '9')
+			hex1 &= 0x0f;
+		else {
+			hex1 &= (SQLWCHAR) ~0x20u;	/* mask off 0x20 to ensure upper case */
+			if ('A' <= hex1 && hex1 <= 'F') {
+				hex1 -= ('A' - 10);
+			} else {
+				tdsdump_log(TDS_DBG_INFO1,
+					    "error_handler:  attempt to convert data stopped by syntax error in source field \n");
+				return TDS_CONVERT_SYNTAX;
+			}
+		}
+		assert(hex1 < 0x10);
+
+		if ((i/2u) >= destlen)
+			continue;
+
+		if (i & 1)
+			dest[i / 2u] = c | hex1;
+		else
+			c = hex1 << 4;
+	}
+	return srclen / 2u;
+}
+
+
 int
 continue_parse_prepared_query(struct _hstmt *stmt, SQLPOINTER DataPtr, SQLLEN StrLen_or_Ind)
 {
@@ -245,9 +293,16 @@ continue_parse_prepared_query(struct _hstmt *stmt, SQLPOINTER DataPtr, SQLLEN St
 	int need_bytes;
 	TDSCOLUMN *curcol;
 	TDSBLOB *blob;
+	int sql_src_type;
 
-	if (!stmt->params)
+	assert(stmt);
+
+	tdsdump_log(TDS_DBG_FUNC, "continue_parse_prepared_query with parameter %d\n", stmt->param_num);
+
+	if (!stmt->params) {
+		tdsdump_log(TDS_DBG_FUNC, "error? continue_parse_prepared_query: no parameters provided");
 		return SQL_ERROR;
+	}
 
 	if (stmt->param_num > stmt->apd->header.sql_desc_count || stmt->param_num > stmt->ipd->header.sql_desc_count)
 		return SQL_ERROR;
@@ -256,18 +311,54 @@ continue_parse_prepared_query(struct _hstmt *stmt, SQLPOINTER DataPtr, SQLLEN St
 
 	curcol = stmt->params->columns[stmt->param_num - (stmt->prepared_query_is_func ? 2 : 1)];
 	blob = NULL;
-	if (is_blob_type(curcol->column_type))
+	if (is_blob_col(curcol))
 		blob = (TDSBLOB *) curcol->column_data;
 	assert(curcol->column_cur_size <= curcol->column_size);
 	need_bytes = curcol->column_size - curcol->column_cur_size;
 
-	if (SQL_NTS == StrLen_or_Ind)
-		len = strlen((char *) DataPtr);
-	else if (SQL_DEFAULT_PARAM == StrLen_or_Ind || StrLen_or_Ind < 0)
-		/* FIXME: I don't know what to do */
+	if (DataPtr == NULL) {
+		switch(StrLen_or_Ind) {
+		case SQL_NULL_DATA:
+		case SQL_DEFAULT_PARAM:
+			break;	/* OK */
+		default:
+			odbc_errs_add(&stmt->errs, "HY009", NULL); /* Invalid use of null pointer */
+			return SQL_ERROR;
+		}
+	}
+
+	/* get C type */
+	sql_src_type = drec_apd->sql_desc_concise_type;
+	if (sql_src_type == SQL_C_DEFAULT)
+		sql_src_type = odbc_sql_to_c_type_default(drec_ipd->sql_desc_concise_type);
+
+	switch(StrLen_or_Ind) {
+	case SQL_NTS:
+		if (sql_src_type == SQL_C_WCHAR)
+			len = sqlwcslen((SQLWCHAR *) DataPtr);
+		else
+			len = strlen((char *) DataPtr);
+		break;
+	case SQL_NULL_DATA:
+		len = 0;
+		break;
+	case SQL_DEFAULT_PARAM:
+		/* FIXME: use the default if the parameter has one. */
+		odbc_errs_add(&stmt->errs, "07S01", NULL); /* Invalid use of default parameter */
 		return SQL_ERROR;
-	else
+	default:
+		if (DataPtr && StrLen_or_Ind < 0) {
+			/*
+			 * "The argument DataPtr was not a null pointer, and
+			 * the argument StrLen_or_Ind was less than 0
+			 * but not equal to SQL_NTS or SQL_NULL_DATA."
+			 */
+			odbc_errs_add(&stmt->errs, "HY090", NULL);
+			return SQL_ERROR;
+		}
 		len = StrLen_or_Ind;
+		break;
+	}
 
 	if (!blob && len > need_bytes)
 		len = need_bytes;
@@ -275,6 +366,32 @@ continue_parse_prepared_query(struct _hstmt *stmt, SQLPOINTER DataPtr, SQLLEN St
 	/* copy to destination */
 	if (blob) {
 		TDS_CHAR *p;
+		int binary_convert = 0;
+		SQLLEN orig_len = len;
+
+		if (sql_src_type == SQL_C_CHAR || sql_src_type == SQL_C_WCHAR) {
+			switch (tds_get_conversion_type(curcol->column_type, curcol->column_size)) {
+			case SYBBINARY:
+			case SYBVARBINARY:
+			case XSYBBINARY:
+			case XSYBVARBINARY:
+			case SYBLONGBINARY:
+			case SYBIMAGE:
+				if (len && sql_src_type == SQL_C_CHAR && !*((char*)DataPtr+len-1))
+					--len;
+
+				if (sql_src_type == SQL_C_WCHAR)
+					len /= sizeof(SQLWCHAR);
+
+				if (!len)
+					return SQL_SUCCESS;
+
+				binary_convert = 1;
+				orig_len = len;
+				len = len / 2u + 1u;
+				break;
+			}
+		}
 
 		if (blob->textvalue)
 			p = (TDS_CHAR *) realloc(blob->textvalue, len + curcol->column_cur_size);
@@ -282,14 +399,60 @@ continue_parse_prepared_query(struct _hstmt *stmt, SQLPOINTER DataPtr, SQLLEN St
 			assert(curcol->column_cur_size == 0);
 			p = (TDS_CHAR *) malloc(len);
 		}
-		if (!p)
+		if (!p) {
+			odbc_errs_add(&stmt->errs, "HY001", NULL); /* Memory allocation error */
 			return SQL_ERROR;
+		}
 		blob->textvalue = p;
-		memcpy(blob->textvalue + curcol->column_cur_size, DataPtr, len);
+
+		p += curcol->column_cur_size;
+		if (binary_convert) {
+			int res;
+
+			len = orig_len;
+
+			if (curcol->column_cur_size > 0
+			&&  curcol->column_text_sqlputdatainfo) {
+				SQLWCHAR data[2];
+				data[0] = curcol->column_text_sqlputdatainfo;
+				data[1] = (sql_src_type == SQL_C_CHAR) ? *(unsigned char*)DataPtr : *(SQLWCHAR*)DataPtr;
+
+				res = odbc_wchar2hex(p, 1, data, 2);
+				if (res < 0) {
+					odbc_convert_err_set(&stmt->errs, res);
+					return SQL_ERROR;
+				}
+				p += res;
+
+				DataPtr = (SQLPOINTER) (((char*)DataPtr) +
+					(sql_src_type == SQL_C_CHAR ? 1 : sizeof(SQLWCHAR)));
+				--len;
+			}
+
+			if (len&1) {
+				--len;
+				curcol->column_text_sqlputdatainfo = (sql_src_type == SQL_C_CHAR) ? ((char*)DataPtr)[len] : ((SQLWCHAR*)DataPtr)[len];
+			}
+
+			res = (sql_src_type == SQL_C_CHAR) ?
+				tds_char2hex(p, len / 2u, DataPtr, len):
+				odbc_wchar2hex(p, len / 2u, DataPtr, len);
+			if (res < 0) {
+				odbc_convert_err_set(&stmt->errs, res);
+				return SQL_ERROR;
+			}
+			p += res;
+
+			len = p - (blob->textvalue + curcol->column_cur_size);
+		} else {
+			memcpy(blob->textvalue + curcol->column_cur_size, DataPtr, len);
+		}
 	} else {
 		memcpy(curcol->column_data + curcol->column_cur_size, DataPtr, len);
 	}
+
 	curcol->column_cur_size += len;
+
 	if (blob && curcol->column_cur_size > curcol->column_size)
 		curcol->column_size = curcol->column_cur_size;
 

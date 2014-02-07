@@ -1,6 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004  Brian Bruns
- * Copyright (C) 2005, 2006, 2007  Frediano Ziglio
+ * Copyright (C) 2005, 2006, 2007, 2010  Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -47,7 +47,7 @@
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: read.c,v 1.106 2007/12/27 13:45:23 freddy77 Exp $");
+TDS_RCSID(var, "$Id: read.c,v 1.112 2010/07/30 07:34:06 freddy77 Exp $");
 
 static int read_and_convert(TDSSOCKET * tds, const TDSICONV * char_conv,
 			    size_t * wire_size, char **outbuf, size_t * outbytesleft);
@@ -69,13 +69,9 @@ static int read_and_convert(TDSSOCKET * tds, const TDSICONV * char_conv,
 unsigned char
 tds_get_byte(TDSSOCKET * tds)
 {
-	int rc;
-
-	if (tds->in_pos >= tds->in_len) {
-		do {
-			if (IS_TDSDEAD(tds) || (rc = tds_read_packet(tds)) < 0)
-				return 0;
-		} while (!rc);
+	while (tds->in_pos >= tds->in_len) {
+		if (tds_read_packet(tds) < 0)
+			return 0;
 	}
 	return tds->in_buf[tds->in_pos++];
 }
@@ -201,7 +197,7 @@ tds_get_string(TDSSOCKET * tds, int string_len, char *dest, size_t dest_size)
 
 	if (IS_TDS7_PLUS(tds)) {
 		if (dest == NULL) {
-			tds_get_n(tds, NULL, wire_bytes);
+			tds_get_n(tds, NULL, (int)wire_bytes);
 			return string_len;
 		}
 
@@ -232,7 +228,7 @@ tds_get_char_data(TDSSOCKET * tds, char *row_buffer, size_t wire_size, TDSCOLUMN
 	TDSBLOB *blob = NULL;
 	char *dest = row_buffer;
 
-	if (is_blob_type(curcol->column_type)) {
+	if (is_blob_col(curcol)) {
 		blob = (TDSBLOB *) row_buffer;
 		dest = blob->textvalue;
 	}
@@ -270,8 +266,8 @@ tds_get_char_data(TDSSOCKET * tds, char *row_buffer, size_t wire_size, TDSCOLUMN
 			return TDS_FAIL;
 		}
 	} else {
-		curcol->column_cur_size = wire_size;
-		if (tds_get_n(tds, dest, wire_size) == NULL) {
+		curcol->column_cur_size = (TDS_INT)wire_size;
+		if (tds_get_n(tds, dest, (int)wire_size) == NULL) {
 			tdsdump_log(TDS_DBG_NETWORK, "error: tds_get_char_data: failed to read %u from wire. \n",
 				    (unsigned int) wire_size);
 			return TDS_FAIL;
@@ -289,12 +285,13 @@ tds_get_char_data(TDSSOCKET * tds, char *row_buffer, size_t wire_size, TDSCOLUMN
 void *
 tds_get_n(TDSSOCKET * tds, void *dest, int need)
 {
-	int have;
-
 	assert(need >= 0);
 
-	have = (tds->in_len - tds->in_pos);
-	while (need > have) {
+	for (;;) {
+		int have = tds->in_len - tds->in_pos;
+
+		if (need <= have)
+			break;
 		/* We need more than is in the buffer, copy what is there */
 		if (dest != NULL) {
 			memcpy((char *) dest, tds->in_buf + tds->in_pos, have);
@@ -303,7 +300,6 @@ tds_get_n(TDSSOCKET * tds, void *dest, int need)
 		need -= have;
 		if (tds_read_packet(tds) < 0)
 			return NULL;
-		have = tds->in_len - tds->in_pos;
 	}
 	if (need > 0) {
 		/* get the remainder if there is any */
@@ -313,63 +309,6 @@ tds_get_n(TDSSOCKET * tds, void *dest, int need)
 		tds->in_pos += need;
 	}
 	return dest;
-}
-
-/**
- * Return the number of bytes needed by specified type.
- */
-int
-tds_get_size_by_type(int servertype)
-{
-	switch (servertype) {
-	case SYBINT1:
-		return 1;
-		break;
-	case SYBINT2:
-		return 2;
-		break;
-	case SYBINT4:
-		return 4;
-		break;
-	case SYB5INT8:
-	case SYBINT8:
-		return 8;
-		break;
-	case SYBREAL:
-		return 4;
-		break;
-	case SYBFLT8:
-		return 8;
-		break;
-	case SYBDATETIME:
-		return 8;
-		break;
-	case SYBDATETIME4:
-		return 4;
-		break;
-	case SYBBIT:
-		return 1;
-		break;
-	case SYBBITN:
-		return 1;
-		break;
-	case SYBMONEY:
-		return 8;
-		break;
-	case SYBMONEY4:
-		return 4;
-		break;
-	case SYBUNIQUE:
-		return 16;
-		break;
-	/* this strange type is used just for null placeholder in rpc */
-	case SYBVOID:
-		return 0;
-		break;
-	default:
-		return -1;
-		break;
-	}
 }
 
 /*
@@ -404,7 +343,7 @@ read_and_convert(TDSSOCKET * tds, const TDSICONV * char_conv, size_t * wire_size
 		bufleft = TEMP_SIZE - bufleft;
 		if (bufleft > *wire_size)
 			bufleft = *wire_size;
-		tds_get_n(tds, (char *) bufp, bufleft);
+		tds_get_n(tds, (char *) bufp, (int)bufleft);
 		*wire_size -= bufleft;
 		bufleft += bufp - temp;
 
@@ -423,7 +362,7 @@ read_and_convert(TDSSOCKET * tds, const TDSICONV * char_conv, size_t * wire_size
 			if (bufp == temp) {	/* tds_iconv did not convert anything, avoid infinite loop */
 				tdsdump_log(TDS_DBG_NETWORK, "No conversion possible: draining remaining %u bytes.\n",
 							     (unsigned int) *wire_size);
-				tds_get_n(tds, NULL, *wire_size); /* perhaps we should read unconverted data into outbuf? */
+				tds_get_n(tds, NULL, (int)(*wire_size)); /* perhaps we should read unconverted data into outbuf? */
 				*wire_size = 0;
 				break;
 			}
@@ -437,7 +376,7 @@ read_and_convert(TDSSOCKET * tds, const TDSICONV * char_conv, size_t * wire_size
 	assert(*wire_size == 0 || *outbytesleft == 0);
 
 	TEMP_FREE;
-	return max_output - *outbytesleft;
+	return (int)(max_output - *outbytesleft);
 }
 
 /** @} */

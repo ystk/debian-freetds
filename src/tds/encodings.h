@@ -1,219 +1,114 @@
 /*
- * This file produced from ../../../src/tds/encodings.pl on Wed May  7 19:21:37 2008
- * $Id: encodings.pl,v 1.10.4.1 2008/03/10 10:07:22 freddy77 Exp $
+ * This file produced from ../../../src/tds/encodings.pl on Wed Aug 17 22:22:08 2011
+ * $Id: encodings.pl,v 1.12 2010/11/26 19:46:55 freddy77 Exp $
  */
-static const TDS_ENCODING canonic_charsets[] = {
-	{        "ISO-8859-1",	1, 1},	/*   0 */
-	{             "UTF-8",	1, 4},	/*   1 */
-	{           "UCS-2LE",	2, 2},	/*   2 */
-	{           "UCS-2BE",	2, 2},	/*   3 */
-	{         "ARMSCII-8",	1, 1},	/*   4 */
-	{             "BIG-5",	1, 2},	/*   5 */
-	{        "BIG5-HKSCS",	1, 2},	/*   6 */
-	{               "C99",	1, 1},	/*   7 */
-	{           "CHINESE",	1, 1},	/*   8 */
-	{                "CN",	1, 1},	/*   9 */
-	{             "CN-GB",	1, 2},	/*  10 */
-	{    "CN-GB-ISOIR165",	1, 1},	/*  11 */
-	{            "CP1133",	1, 1},	/*  12 */
-	{            "CP1250",	1, 1},	/*  13 */
-	{            "CP1251",	1, 1},	/*  14 */
-	{            "CP1252",	1, 1},	/*  15 */
-	{            "CP1253",	1, 1},	/*  16 */
-	{            "CP1254",	1, 1},	/*  17 */
-	{            "CP1255",	1, 1},	/*  18 */
-	{            "CP1256",	1, 1},	/*  19 */
-	{            "CP1257",	1, 1},	/*  20 */
-	{            "CP1258",	1, 1},	/*  21 */
-	{            "CP1361",	1, 2},	/*  22 */
-	{             "CP437",	1, 1},	/*  23 */
-	{             "CP850",	1, 1},	/*  24 */
-	{             "CP862",	1, 1},	/*  25 */
-	{             "CP866",	1, 1},	/*  26 */
-	{             "CP874",	1, 1},	/*  27 */
-	{             "CP932",	1, 2},	/*  28 */
-	{             "CP936",	1, 2},	/*  29 */
-	{             "CP949",	1, 2},	/*  30 */
-	{             "CP950",	1, 2},	/*  31 */
-	{            "EUC-JP",	1, 3},	/*  32 */
-	{            "EUC-KR",	1, 2},	/*  33 */
-	{            "EUC-TW",	1, 4},	/*  34 */
-	{           "GB18030",	1, 4},	/*  35 */
-	{  "GEORGIAN-ACADEMY",	1, 1},	/*  36 */
-	{       "GEORGIAN-PS",	1, 1},	/*  37 */
-	{                "HZ",	1, 1},	/*  38 */
-	{       "ISO-2022-CN",	1, 4},	/*  39 */
-	{   "ISO-2022-CN-EXT",	1, 4},	/*  40 */
-	{       "ISO-2022-JP",	1, 1},	/*  41 */
-	{     "ISO-2022-JP-1",	1, 1},	/*  42 */
-	{     "ISO-2022-JP-2",	1, 1},	/*  43 */
-	{       "ISO-2022-KR",	1, 2},	/*  44 */
-	{       "ISO-8859-10",	1, 1},	/*  45 */
-	{       "ISO-8859-13",	1, 1},	/*  46 */
-	{       "ISO-8859-14",	1, 1},	/*  47 */
-	{       "ISO-8859-15",	1, 1},	/*  48 */
-	{       "ISO-8859-16",	1, 1},	/*  49 */
-	{        "ISO-8859-2",	1, 1},	/*  50 */
-	{        "ISO-8859-3",	1, 1},	/*  51 */
-	{        "ISO-8859-4",	1, 1},	/*  52 */
-	{        "ISO-8859-5",	1, 1},	/*  53 */
-	{        "ISO-8859-6",	1, 1},	/*  54 */
-	{        "ISO-8859-7",	1, 1},	/*  55 */
-	{        "ISO-8859-8",	1, 1},	/*  56 */
-	{        "ISO-8859-9",	1, 1},	/*  57 */
-	{         "ISO-IR-14",	1, 1},	/*  58 */
-	{        "ISO-IR-149",	1, 1},	/*  59 */
-	{        "ISO-IR-159",	1, 1},	/*  60 */
-	{        "ISO-IR-166",	1, 1},	/*  61 */
-	{         "ISO-IR-87",	1, 1},	/*  62 */
-	{              "JAVA",	1, 1},	/*  63 */
-	{     "JISX0201-1976",	1, 1},	/*  64 */
-	{            "KOI8-R",	1, 1},	/*  65 */
-	{           "KOI8-RU",	1, 1},	/*  66 */
-	{            "KOI8-T",	1, 1},	/*  67 */
-	{            "KOI8-U",	1, 1},	/*  68 */
-	{               "MAC",	1, 1},	/*  69 */
-	{         "MACARABIC",	1, 1},	/*  70 */
-	{  "MACCENTRALEUROPE",	1, 1},	/*  71 */
-	{       "MACCROATIAN",	1, 1},	/*  72 */
-	{       "MACCYRILLIC",	1, 1},	/*  73 */
-	{          "MACGREEK",	1, 1},	/*  74 */
-	{         "MACHEBREW",	1, 1},	/*  75 */
-	{        "MACICELAND",	1, 1},	/*  76 */
-	{        "MACROMANIA",	1, 1},	/*  77 */
-	{           "MACTHAI",	1, 1},	/*  78 */
-	{        "MACTURKISH",	1, 1},	/*  79 */
-	{        "MACUKRAINE",	1, 1},	/*  80 */
-	{         "MULELAO-1",	1, 1},	/*  81 */
-	{          "NEXTSTEP",	1, 1},	/*  82 */
-	{            "ROMAN8",	1, 1},	/*  83 */
-	{              "SJIS",	1, 2},	/*  84 */
-	{              "TCVN",	1, 1},	/*  85 */
-	{             "UCS-2",	2, 2},	/*  86 */
-	{    "UCS-2-INTERNAL",	2, 2},	/*  87 */
-	{     "UCS-2-SWAPPED",	2, 2},	/*  88 */
-	{             "UCS-4",	4, 4},	/*  89 */
-	{    "UCS-4-INTERNAL",	4, 4},	/*  90 */
-	{     "UCS-4-SWAPPED",	4, 4},	/*  91 */
-	{           "UCS-4BE",	4, 4},	/*  92 */
-	{           "UCS-4LE",	4, 4},	/*  93 */
-	{          "US-ASCII",	1, 1},	/*  94 */
-	{            "UTF-16",	2, 4},	/*  95 */
-	{          "UTF-16BE",	2, 4},	/*  96 */
-	{          "UTF-16LE",	2, 4},	/*  97 */
-	{            "UTF-32",	4, 4},	/*  98 */
-	{          "UTF-32BE",	4, 4},	/*  99 */
-	{          "UTF-32LE",	4, 4},	/* 100 */
-	{             "UTF-7",	1, 4},	/* 101 */
-	{            "VISCII",	1, 1},	/* 102 */
-	{"",	0, 0}
-};
+#ifdef TDS_ICONV_ENCODING_TABLES
 
-enum {
-	        TDS_CHARSET_ISO_8859_1 =   0,
-	             TDS_CHARSET_UTF_8 =   1,
-	           TDS_CHARSET_UCS_2LE =   2,
-	           TDS_CHARSET_UCS_2BE =   3,
-	         TDS_CHARSET_ARMSCII_8 =   4,
-	             TDS_CHARSET_BIG_5 =   5,
-	        TDS_CHARSET_BIG5_HKSCS =   6,
-	               TDS_CHARSET_C99 =   7,
-	           TDS_CHARSET_CHINESE =   8,
-	                TDS_CHARSET_CN =   9,
-	             TDS_CHARSET_CN_GB =  10,
-	    TDS_CHARSET_CN_GB_ISOIR165 =  11,
-	            TDS_CHARSET_CP1133 =  12,
-	            TDS_CHARSET_CP1250 =  13,
-	            TDS_CHARSET_CP1251 =  14,
-	            TDS_CHARSET_CP1252 =  15,
-	            TDS_CHARSET_CP1253 =  16,
-	            TDS_CHARSET_CP1254 =  17,
-	            TDS_CHARSET_CP1255 =  18,
-	            TDS_CHARSET_CP1256 =  19,
-	            TDS_CHARSET_CP1257 =  20,
-	            TDS_CHARSET_CP1258 =  21,
-	            TDS_CHARSET_CP1361 =  22,
-	             TDS_CHARSET_CP437 =  23,
-	             TDS_CHARSET_CP850 =  24,
-	             TDS_CHARSET_CP862 =  25,
-	             TDS_CHARSET_CP866 =  26,
-	             TDS_CHARSET_CP874 =  27,
-	             TDS_CHARSET_CP932 =  28,
-	             TDS_CHARSET_CP936 =  29,
-	             TDS_CHARSET_CP949 =  30,
-	             TDS_CHARSET_CP950 =  31,
-	            TDS_CHARSET_EUC_JP =  32,
-	            TDS_CHARSET_EUC_KR =  33,
-	            TDS_CHARSET_EUC_TW =  34,
-	           TDS_CHARSET_GB18030 =  35,
-	  TDS_CHARSET_GEORGIAN_ACADEMY =  36,
-	       TDS_CHARSET_GEORGIAN_PS =  37,
-	                TDS_CHARSET_HZ =  38,
-	       TDS_CHARSET_ISO_2022_CN =  39,
-	   TDS_CHARSET_ISO_2022_CN_EXT =  40,
-	       TDS_CHARSET_ISO_2022_JP =  41,
-	     TDS_CHARSET_ISO_2022_JP_1 =  42,
-	     TDS_CHARSET_ISO_2022_JP_2 =  43,
-	       TDS_CHARSET_ISO_2022_KR =  44,
-	       TDS_CHARSET_ISO_8859_10 =  45,
-	       TDS_CHARSET_ISO_8859_13 =  46,
-	       TDS_CHARSET_ISO_8859_14 =  47,
-	       TDS_CHARSET_ISO_8859_15 =  48,
-	       TDS_CHARSET_ISO_8859_16 =  49,
-	        TDS_CHARSET_ISO_8859_2 =  50,
-	        TDS_CHARSET_ISO_8859_3 =  51,
-	        TDS_CHARSET_ISO_8859_4 =  52,
-	        TDS_CHARSET_ISO_8859_5 =  53,
-	        TDS_CHARSET_ISO_8859_6 =  54,
-	        TDS_CHARSET_ISO_8859_7 =  55,
-	        TDS_CHARSET_ISO_8859_8 =  56,
-	        TDS_CHARSET_ISO_8859_9 =  57,
-	         TDS_CHARSET_ISO_IR_14 =  58,
-	        TDS_CHARSET_ISO_IR_149 =  59,
-	        TDS_CHARSET_ISO_IR_159 =  60,
-	        TDS_CHARSET_ISO_IR_166 =  61,
-	         TDS_CHARSET_ISO_IR_87 =  62,
-	              TDS_CHARSET_JAVA =  63,
-	     TDS_CHARSET_JISX0201_1976 =  64,
-	            TDS_CHARSET_KOI8_R =  65,
-	           TDS_CHARSET_KOI8_RU =  66,
-	            TDS_CHARSET_KOI8_T =  67,
-	            TDS_CHARSET_KOI8_U =  68,
-	               TDS_CHARSET_MAC =  69,
-	         TDS_CHARSET_MACARABIC =  70,
-	  TDS_CHARSET_MACCENTRALEUROPE =  71,
-	       TDS_CHARSET_MACCROATIAN =  72,
-	       TDS_CHARSET_MACCYRILLIC =  73,
-	          TDS_CHARSET_MACGREEK =  74,
-	         TDS_CHARSET_MACHEBREW =  75,
-	        TDS_CHARSET_MACICELAND =  76,
-	        TDS_CHARSET_MACROMANIA =  77,
-	           TDS_CHARSET_MACTHAI =  78,
-	        TDS_CHARSET_MACTURKISH =  79,
-	        TDS_CHARSET_MACUKRAINE =  80,
-	         TDS_CHARSET_MULELAO_1 =  81,
-	          TDS_CHARSET_NEXTSTEP =  82,
-	            TDS_CHARSET_ROMAN8 =  83,
-	              TDS_CHARSET_SJIS =  84,
-	              TDS_CHARSET_TCVN =  85,
-	             TDS_CHARSET_UCS_2 =  86,
-	    TDS_CHARSET_UCS_2_INTERNAL =  87,
-	     TDS_CHARSET_UCS_2_SWAPPED =  88,
-	             TDS_CHARSET_UCS_4 =  89,
-	    TDS_CHARSET_UCS_4_INTERNAL =  90,
-	     TDS_CHARSET_UCS_4_SWAPPED =  91,
-	           TDS_CHARSET_UCS_4BE =  92,
-	           TDS_CHARSET_UCS_4LE =  93,
-	          TDS_CHARSET_US_ASCII =  94,
-	            TDS_CHARSET_UTF_16 =  95,
-	          TDS_CHARSET_UTF_16BE =  96,
-	          TDS_CHARSET_UTF_16LE =  97,
-	            TDS_CHARSET_UTF_32 =  98,
-	          TDS_CHARSET_UTF_32BE =  99,
-	          TDS_CHARSET_UTF_32LE = 100,
-	             TDS_CHARSET_UTF_7 = 101,
-	            TDS_CHARSET_VISCII = 102,
-	              TDS_NUM_CHARSETS = 103
+static const TDS_ENCODING canonic_charsets[] = {
+	{        "ISO-8859-1",	1, 1,   0},	/*   0 */
+	{             "UTF-8",	1, 4,   1},	/*   1 */
+	{           "UCS-2LE",	2, 2,   2},	/*   2 */
+	{           "UCS-2BE",	2, 2,   3},	/*   3 */
+	{         "ARMSCII-8",	1, 1,   4},	/*   4 */
+	{             "BIG-5",	1, 2,   5},	/*   5 */
+	{        "BIG5-HKSCS",	1, 2,   6},	/*   6 */
+	{               "C99",	1, 1,   7},	/*   7 */
+	{           "CHINESE",	1, 1,   8},	/*   8 */
+	{                "CN",	1, 1,   9},	/*   9 */
+	{             "CN-GB",	1, 2,  10},	/*  10 */
+	{    "CN-GB-ISOIR165",	1, 1,  11},	/*  11 */
+	{            "CP1133",	1, 1,  12},	/*  12 */
+	{            "CP1250",	1, 1,  13},	/*  13 */
+	{            "CP1251",	1, 1,  14},	/*  14 */
+	{            "CP1252",	1, 1,  15},	/*  15 */
+	{            "CP1253",	1, 1,  16},	/*  16 */
+	{            "CP1254",	1, 1,  17},	/*  17 */
+	{            "CP1255",	1, 1,  18},	/*  18 */
+	{            "CP1256",	1, 1,  19},	/*  19 */
+	{            "CP1257",	1, 1,  20},	/*  20 */
+	{            "CP1258",	1, 1,  21},	/*  21 */
+	{            "CP1361",	1, 2,  22},	/*  22 */
+	{             "CP437",	1, 1,  23},	/*  23 */
+	{             "CP850",	1, 1,  24},	/*  24 */
+	{             "CP862",	1, 1,  25},	/*  25 */
+	{             "CP866",	1, 1,  26},	/*  26 */
+	{             "CP874",	1, 1,  27},	/*  27 */
+	{             "CP932",	1, 2,  28},	/*  28 */
+	{             "CP936",	1, 2,  29},	/*  29 */
+	{             "CP949",	1, 2,  30},	/*  30 */
+	{             "CP950",	1, 2,  31},	/*  31 */
+	{            "EUC-JP",	1, 3,  32},	/*  32 */
+	{            "EUC-KR",	1, 2,  33},	/*  33 */
+	{            "EUC-TW",	1, 4,  34},	/*  34 */
+	{           "GB18030",	1, 4,  35},	/*  35 */
+	{  "GEORGIAN-ACADEMY",	1, 1,  36},	/*  36 */
+	{       "GEORGIAN-PS",	1, 1,  37},	/*  37 */
+	{                "HZ",	1, 1,  38},	/*  38 */
+	{       "ISO-2022-CN",	1, 4,  39},	/*  39 */
+	{   "ISO-2022-CN-EXT",	1, 4,  40},	/*  40 */
+	{       "ISO-2022-JP",	1, 1,  41},	/*  41 */
+	{     "ISO-2022-JP-1",	1, 1,  42},	/*  42 */
+	{     "ISO-2022-JP-2",	1, 1,  43},	/*  43 */
+	{       "ISO-2022-KR",	1, 2,  44},	/*  44 */
+	{       "ISO-8859-10",	1, 1,  45},	/*  45 */
+	{       "ISO-8859-13",	1, 1,  46},	/*  46 */
+	{       "ISO-8859-14",	1, 1,  47},	/*  47 */
+	{       "ISO-8859-15",	1, 1,  48},	/*  48 */
+	{       "ISO-8859-16",	1, 1,  49},	/*  49 */
+	{        "ISO-8859-2",	1, 1,  50},	/*  50 */
+	{        "ISO-8859-3",	1, 1,  51},	/*  51 */
+	{        "ISO-8859-4",	1, 1,  52},	/*  52 */
+	{        "ISO-8859-5",	1, 1,  53},	/*  53 */
+	{        "ISO-8859-6",	1, 1,  54},	/*  54 */
+	{        "ISO-8859-7",	1, 1,  55},	/*  55 */
+	{        "ISO-8859-8",	1, 1,  56},	/*  56 */
+	{        "ISO-8859-9",	1, 1,  57},	/*  57 */
+	{         "ISO-IR-14",	1, 1,  58},	/*  58 */
+	{        "ISO-IR-149",	1, 1,  59},	/*  59 */
+	{        "ISO-IR-159",	1, 1,  60},	/*  60 */
+	{        "ISO-IR-166",	1, 1,  61},	/*  61 */
+	{         "ISO-IR-87",	1, 1,  62},	/*  62 */
+	{              "JAVA",	1, 1,  63},	/*  63 */
+	{     "JISX0201-1976",	1, 1,  64},	/*  64 */
+	{            "KOI8-R",	1, 1,  65},	/*  65 */
+	{           "KOI8-RU",	1, 1,  66},	/*  66 */
+	{            "KOI8-T",	1, 1,  67},	/*  67 */
+	{            "KOI8-U",	1, 1,  68},	/*  68 */
+	{               "MAC",	1, 1,  69},	/*  69 */
+	{         "MACARABIC",	1, 1,  70},	/*  70 */
+	{  "MACCENTRALEUROPE",	1, 1,  71},	/*  71 */
+	{       "MACCROATIAN",	1, 1,  72},	/*  72 */
+	{       "MACCYRILLIC",	1, 1,  73},	/*  73 */
+	{          "MACGREEK",	1, 1,  74},	/*  74 */
+	{         "MACHEBREW",	1, 1,  75},	/*  75 */
+	{        "MACICELAND",	1, 1,  76},	/*  76 */
+	{        "MACROMANIA",	1, 1,  77},	/*  77 */
+	{           "MACTHAI",	1, 1,  78},	/*  78 */
+	{        "MACTURKISH",	1, 1,  79},	/*  79 */
+	{        "MACUKRAINE",	1, 1,  80},	/*  80 */
+	{         "MULELAO-1",	1, 1,  81},	/*  81 */
+	{          "NEXTSTEP",	1, 1,  82},	/*  82 */
+	{            "ROMAN8",	1, 1,  83},	/*  83 */
+	{              "SJIS",	1, 2,  84},	/*  84 */
+	{              "TCVN",	1, 1,  85},	/*  85 */
+	{             "UCS-2",	2, 2,  86},	/*  86 */
+	{    "UCS-2-INTERNAL",	2, 2,  87},	/*  87 */
+	{     "UCS-2-SWAPPED",	2, 2,  88},	/*  88 */
+	{             "UCS-4",	4, 4,  89},	/*  89 */
+	{    "UCS-4-INTERNAL",	4, 4,  90},	/*  90 */
+	{     "UCS-4-SWAPPED",	4, 4,  91},	/*  91 */
+	{           "UCS-4BE",	4, 4,  92},	/*  92 */
+	{           "UCS-4LE",	4, 4,  93},	/*  93 */
+	{          "US-ASCII",	1, 1,  94},	/*  94 */
+	{            "UTF-16",	2, 4,  95},	/*  95 */
+	{          "UTF-16BE",	2, 4,  96},	/*  96 */
+	{          "UTF-16LE",	2, 4,  97},	/*  97 */
+	{            "UTF-32",	4, 4,  98},	/*  98 */
+	{          "UTF-32BE",	4, 4,  99},	/*  99 */
+	{          "UTF-32LE",	4, 4, 100},	/* 100 */
+	{             "UTF-7",	1, 4, 101},	/* 101 */
+	{            "VISCII",	1, 1, 102},	/* 102 */
+	{"",	0, 0, 0}
 };
 
 static const CHARACTER_SET_ALIAS iconv_aliases[] = {
@@ -638,5 +533,113 @@ static const CHARACTER_SET_ALIAS sybase_aliases[] = {
 	{            "tis620",  61 },
 	{              "utf8",   1 },
 	{NULL,	0}
+};
+#endif
+
+enum {
+	        TDS_CHARSET_ISO_8859_1 =   0,
+	             TDS_CHARSET_UTF_8 =   1,
+	           TDS_CHARSET_UCS_2LE =   2,
+	           TDS_CHARSET_UCS_2BE =   3,
+	         TDS_CHARSET_ARMSCII_8 =   4,
+	             TDS_CHARSET_BIG_5 =   5,
+	        TDS_CHARSET_BIG5_HKSCS =   6,
+	               TDS_CHARSET_C99 =   7,
+	           TDS_CHARSET_CHINESE =   8,
+	                TDS_CHARSET_CN =   9,
+	             TDS_CHARSET_CN_GB =  10,
+	    TDS_CHARSET_CN_GB_ISOIR165 =  11,
+	            TDS_CHARSET_CP1133 =  12,
+	            TDS_CHARSET_CP1250 =  13,
+	            TDS_CHARSET_CP1251 =  14,
+	            TDS_CHARSET_CP1252 =  15,
+	            TDS_CHARSET_CP1253 =  16,
+	            TDS_CHARSET_CP1254 =  17,
+	            TDS_CHARSET_CP1255 =  18,
+	            TDS_CHARSET_CP1256 =  19,
+	            TDS_CHARSET_CP1257 =  20,
+	            TDS_CHARSET_CP1258 =  21,
+	            TDS_CHARSET_CP1361 =  22,
+	             TDS_CHARSET_CP437 =  23,
+	             TDS_CHARSET_CP850 =  24,
+	             TDS_CHARSET_CP862 =  25,
+	             TDS_CHARSET_CP866 =  26,
+	             TDS_CHARSET_CP874 =  27,
+	             TDS_CHARSET_CP932 =  28,
+	             TDS_CHARSET_CP936 =  29,
+	             TDS_CHARSET_CP949 =  30,
+	             TDS_CHARSET_CP950 =  31,
+	            TDS_CHARSET_EUC_JP =  32,
+	            TDS_CHARSET_EUC_KR =  33,
+	            TDS_CHARSET_EUC_TW =  34,
+	           TDS_CHARSET_GB18030 =  35,
+	  TDS_CHARSET_GEORGIAN_ACADEMY =  36,
+	       TDS_CHARSET_GEORGIAN_PS =  37,
+	                TDS_CHARSET_HZ =  38,
+	       TDS_CHARSET_ISO_2022_CN =  39,
+	   TDS_CHARSET_ISO_2022_CN_EXT =  40,
+	       TDS_CHARSET_ISO_2022_JP =  41,
+	     TDS_CHARSET_ISO_2022_JP_1 =  42,
+	     TDS_CHARSET_ISO_2022_JP_2 =  43,
+	       TDS_CHARSET_ISO_2022_KR =  44,
+	       TDS_CHARSET_ISO_8859_10 =  45,
+	       TDS_CHARSET_ISO_8859_13 =  46,
+	       TDS_CHARSET_ISO_8859_14 =  47,
+	       TDS_CHARSET_ISO_8859_15 =  48,
+	       TDS_CHARSET_ISO_8859_16 =  49,
+	        TDS_CHARSET_ISO_8859_2 =  50,
+	        TDS_CHARSET_ISO_8859_3 =  51,
+	        TDS_CHARSET_ISO_8859_4 =  52,
+	        TDS_CHARSET_ISO_8859_5 =  53,
+	        TDS_CHARSET_ISO_8859_6 =  54,
+	        TDS_CHARSET_ISO_8859_7 =  55,
+	        TDS_CHARSET_ISO_8859_8 =  56,
+	        TDS_CHARSET_ISO_8859_9 =  57,
+	         TDS_CHARSET_ISO_IR_14 =  58,
+	        TDS_CHARSET_ISO_IR_149 =  59,
+	        TDS_CHARSET_ISO_IR_159 =  60,
+	        TDS_CHARSET_ISO_IR_166 =  61,
+	         TDS_CHARSET_ISO_IR_87 =  62,
+	              TDS_CHARSET_JAVA =  63,
+	     TDS_CHARSET_JISX0201_1976 =  64,
+	            TDS_CHARSET_KOI8_R =  65,
+	           TDS_CHARSET_KOI8_RU =  66,
+	            TDS_CHARSET_KOI8_T =  67,
+	            TDS_CHARSET_KOI8_U =  68,
+	               TDS_CHARSET_MAC =  69,
+	         TDS_CHARSET_MACARABIC =  70,
+	  TDS_CHARSET_MACCENTRALEUROPE =  71,
+	       TDS_CHARSET_MACCROATIAN =  72,
+	       TDS_CHARSET_MACCYRILLIC =  73,
+	          TDS_CHARSET_MACGREEK =  74,
+	         TDS_CHARSET_MACHEBREW =  75,
+	        TDS_CHARSET_MACICELAND =  76,
+	        TDS_CHARSET_MACROMANIA =  77,
+	           TDS_CHARSET_MACTHAI =  78,
+	        TDS_CHARSET_MACTURKISH =  79,
+	        TDS_CHARSET_MACUKRAINE =  80,
+	         TDS_CHARSET_MULELAO_1 =  81,
+	          TDS_CHARSET_NEXTSTEP =  82,
+	            TDS_CHARSET_ROMAN8 =  83,
+	              TDS_CHARSET_SJIS =  84,
+	              TDS_CHARSET_TCVN =  85,
+	             TDS_CHARSET_UCS_2 =  86,
+	    TDS_CHARSET_UCS_2_INTERNAL =  87,
+	     TDS_CHARSET_UCS_2_SWAPPED =  88,
+	             TDS_CHARSET_UCS_4 =  89,
+	    TDS_CHARSET_UCS_4_INTERNAL =  90,
+	     TDS_CHARSET_UCS_4_SWAPPED =  91,
+	           TDS_CHARSET_UCS_4BE =  92,
+	           TDS_CHARSET_UCS_4LE =  93,
+	          TDS_CHARSET_US_ASCII =  94,
+	            TDS_CHARSET_UTF_16 =  95,
+	          TDS_CHARSET_UTF_16BE =  96,
+	          TDS_CHARSET_UTF_16LE =  97,
+	            TDS_CHARSET_UTF_32 =  98,
+	          TDS_CHARSET_UTF_32BE =  99,
+	          TDS_CHARSET_UTF_32LE = 100,
+	             TDS_CHARSET_UTF_7 = 101,
+	            TDS_CHARSET_VISCII = 102,
+	              TDS_NUM_CHARSETS = 103
 };
 

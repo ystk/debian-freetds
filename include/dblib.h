@@ -20,7 +20,7 @@
 #ifndef _dblib_h_
 #define _dblib_h_
 
-#if defined(__GNUC__) && __GNUC__ >= 4
+#if defined(__GNUC__) && __GNUC__ >= 4 && !defined(__MINGW32__)
 #pragma GCC visibility push(hidden)
 #endif
 
@@ -32,16 +32,16 @@ extern "C"
 #endif
 #endif
 
-/* $Id: dblib.h,v 1.43 2007/12/05 03:04:11 jklowden Exp $ */
+/* $Id: dblib.h,v 1.46 2010/01/25 23:05:58 freddy77 Exp $ */
 
-enum {
-	  _DB_RES_INIT            = 0
-	, _DB_RES_RESULTSET_EMPTY = 1
-	, _DB_RES_RESULTSET_ROWS  = 2
-	, _DB_RES_NEXT_RESULT     = 3
-	, _DB_RES_NO_MORE_RESULTS = 4
-	, _DB_RES_SUCCEED         = 5
-};
+typedef enum tag_DB_RESULT_STATE {
+	  _DB_RES_INIT
+	, _DB_RES_RESULTSET_EMPTY
+	, _DB_RES_RESULTSET_ROWS
+	, _DB_RES_NEXT_RESULT
+	, _DB_RES_NO_MORE_RESULTS
+	, _DB_RES_SUCCEED
+} DB_RESULT_STATE;
 
 struct tds_dblib_loginrec
 {
@@ -86,19 +86,6 @@ typedef struct
 	TDS_INT batch;
 } BCP_HOSTFILEINFO;
 
-typedef struct
-{
-	const char *hint;
-	TDS_CHAR *tablename;
-	TDS_CHAR *insert_stmt;
-	TDS_INT direction;
-	TDS_INT queryout;
-	TDS_INT identity_insert_on;
-	TDS_INT xfer_init;
-	TDS_INT var_cols;
-	TDS_INT bind_count;
-	TDSRESULTINFO *bindinfo;
-} DB_BCPINFO;
 /* linked list of rpc parameters */
 
 typedef struct _DBREMOTE_PROC_PARAM
@@ -147,7 +134,7 @@ struct tds_dblib_dbprocess
 
 	int noautofree;
 	int more_results;	/* boolean.  Are we expecting results? */
-	int dbresults_state;
+	DB_RESULT_STATE dbresults_state;
 	int dbresults_retcode;
 	BYTE *user_data;	/* see dbsetuserdata() and dbgetuserdata() */
 	unsigned char *dbbuf;	/* is dynamic!                   */
@@ -160,7 +147,7 @@ struct tds_dblib_dbprocess
 	DBOPTION *dbopts;
 	DBSTRING *dboptcmd;
 	BCP_HOSTFILEINFO *hostfileinfo;
-	DB_BCPINFO *bcpinfo;
+	TDSBCPINFO *bcpinfo;
 	DBREMOTE_PROC *rpc;
 	DBUSMALLINT envchange_rcv;
 	char dbcurdb[DBMAXNAME + 1];
@@ -212,7 +199,7 @@ extern EHANDLEFUNC _dblib_err_handler;
 }
 #endif
 
-#if defined(__GNUC__) && __GNUC__ >= 4
+#if defined(__GNUC__) && __GNUC__ >= 4 && !defined(__MINGW32__)
 #pragma GCC visibility pop
 #endif
 

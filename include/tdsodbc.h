@@ -1,6 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005  Brian Bruns
- * Copyright (C) 2004, 2005, 2006, 2007  Frediano Ziglio
+ * Copyright (C) 2004-2010  Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -66,13 +66,19 @@ extern "C"
 #endif
 #endif
 
-/* $Id: tdsodbc.h,v 1.103.2.1 2008/01/27 10:41:22 freddy77 Exp $ */
+/* $Id: tdsodbc.h,v 1.127 2010/11/09 15:46:42 freddy77 Exp $ */
 
-#if defined(__GNUC__) && __GNUC__ >= 4
+#if defined(__GNUC__) && __GNUC__ >= 4 && !defined(__MINGW32__)
 #pragma GCC visibility push(hidden)
 #define ODBC_API SQL_API __attribute__((externally_visible))
 #else
 #define ODBC_API SQL_API
+#endif
+
+#if (defined(_WIN32) || defined(__CYGWIN__)) && defined(__GNUC__)
+#  define ODBC_PUBLIC __attribute__((dllexport))
+#else
+#  define ODBC_PUBLIC
 #endif
 
 #define ODBC_MAX(a,b) ( (a) > (b) ? (a) : (b) )
@@ -91,11 +97,13 @@ struct _sql_error
 
 struct _sql_errors
 {
-	SQLRETURN lastrc;
-	int num_errors;
 	struct _sql_error *errs;
+	int num_errors;
+	SQLRETURN lastrc;
 	char ranked;
 };
+
+typedef struct _sql_errors TDS_ERRS;
 
 #if ENABLE_EXTRA_CHECKS
 void odbc_check_struct_extra(void *p);
@@ -177,11 +185,11 @@ struct _drecord
 struct _hdesc
 {
 	SQLSMALLINT htype;	/* do not reorder this field */
+	struct _sql_errors errs;	/* do not reorder this field */
 	int type;
 	SQLHANDLE parent;
 	struct _dheader header;
 	struct _drecord *records;
-	struct _sql_errors errs;
 };
 
 typedef struct _hdesc TDS_DESC;
@@ -202,13 +210,14 @@ struct _heattr
 struct _hchk
 {
 	SQLSMALLINT htype;	/* do not reorder this field */
+	struct _sql_errors errs;	/* do not reorder this field */
 };
 
 struct _henv
 {
 	SQLSMALLINT htype;	/* do not reorder this field */
+	struct _sql_errors errs;	/* do not reorder this field */
 	TDSCONTEXT *tds_ctx;
-	struct _sql_errors errs;
 	struct _heattr attr;
 };
 
@@ -242,10 +251,16 @@ struct _hstmt;
 struct _hdbc
 {
 	SQLSMALLINT htype;	/* do not reorder this field */
+	struct _sql_errors errs;	/* do not reorder this field */
 	struct _henv *env;
 	TDSSOCKET *tds_socket;
 	DSTR dsn;
 	DSTR server;		/* aka Instance */
+#ifdef ENABLE_ODBC_WIDE
+	DSTR original_charset;
+	TDSICONV *mb_conv;
+#endif
+
 	/**
 	 * Statement executing. This should be set AFTER sending query
 	 * to avoid race condition and assure to not overwrite it if
@@ -254,7 +269,6 @@ struct _hdbc
 	struct _hstmt *current_statement;
 	/** list of all statements allocated from this connection */
 	struct _hstmt *stmt_list;
-	struct _sql_errors errs;
 	struct _hcattr attr;
 	/** descriptors associated to connection */
 	TDS_DESC *uad[TDS_MAX_APP_DESC];
@@ -323,9 +337,19 @@ typedef enum
 	PRE_NORMAL_ROW
 } TDS_ODBC_ROW_STATUS;
 
+typedef enum
+{
+	ODBC_SPECIAL_NONE = 0,
+	ODBC_SPECIAL_GETTYPEINFO = 1,
+	ODBC_SPECIAL_COLUMNS = 2,
+	ODBC_SPECIAL_PROCEDURECOLUMNS = 3,
+	ODBC_SPECIAL_SPECIALCOLUMNS = 4
+} TDS_ODBC_SPECIAL_ROWS;
+
 struct _hstmt
 {
 	SQLSMALLINT htype;	/* do not reorder this field */
+	struct _sql_errors errs;	/* do not reorder this field */
 	struct _hdbc *dbc;
 	/** query to execute */
 	char *query;
@@ -361,13 +385,12 @@ struct _hstmt
 	TDS_ODBC_ROW_STATUS row_status;
 	/* do NOT free dynamic, free from socket or attach to connection */
 	TDSDYNAMIC *dyn;
-	struct _sql_errors errs;
 	TDS_DESC *ard, *ird, *apd, *ipd;
 	TDS_DESC *orig_ard, *orig_apd;
 	SQLULEN sql_rowset_size;
 	struct _hsattr attr;
 	DSTR cursor_name;	/* auto generated cursor name */
-	int special_row;
+	TDS_ODBC_SPECIAL_ROWS special_row;
 	/* do NOT free cursor, free from socket or attach to connection */
 	TDSCURSOR *cursor;
 	unsigned char cancel_sent;
@@ -418,13 +441,50 @@ typedef struct _hchk TDS_CHK;
 #endif
 #endif
 
-#ifdef WIN32
+#ifdef _WIN32
 BOOL get_login_info(HWND hwndParent, TDSCONNECTION * connection);
 #endif
+
+#define ODBC_PARAM_LIST \
+	ODBC_PARAM(Servername) \
+	ODBC_PARAM(Server) \
+	ODBC_PARAM(DSN) \
+	ODBC_PARAM(UID) \
+	ODBC_PARAM(PWD) \
+	ODBC_PARAM(Address) \
+	ODBC_PARAM(Port) \
+	ODBC_PARAM(TDS_Version) \
+	ODBC_PARAM(Language) \
+	ODBC_PARAM(Database) \
+	ODBC_PARAM(TextSize) \
+	ODBC_PARAM(PacketSize) \
+	ODBC_PARAM(ClientCharset) \
+	ODBC_PARAM(DumpFile) \
+	ODBC_PARAM(DumpFileAppend) \
+	ODBC_PARAM(DebugFlags) \
+	ODBC_PARAM(Encryption) \
+	ODBC_PARAM(Trusted_Connection) \
+	ODBC_PARAM(APP) \
+	ODBC_PARAM(WSID) \
+	ODBC_PARAM(UseNTLMv2)
+
+#define ODBC_PARAM(p) ODBC_PARAM_##p,
+enum {
+	ODBC_PARAM_LIST
+	ODBC_PARAM_SIZE
+};
+#undef ODBC_PARAM
+
 
 /*
  * connectparams.h
  */
+
+typedef struct {
+	const char *p;
+	size_t len;
+} TDS_PARSED_PARAM;
+
 /**
  * Parses a connection string for SQLDriverConnect().
  * \param connect_string      point to connection string
@@ -432,13 +492,16 @@ BOOL get_login_info(HWND hwndParent, TDSCONNECTION * connection);
  * \param connection          structure where to store informations
  * \return 0 if error, 1 otherwise
  */
-int odbc_parse_connect_string(const char *connect_string, const char *connect_string_end, TDSCONNECTION * connection);
-int odbc_get_dsn_info(const char *DSN, TDSCONNECTION * connection);
+int odbc_parse_connect_string(TDS_ERRS *errs, const char *connect_string, const char *connect_string_end, TDSCONNECTION * connection, TDS_PARSED_PARAM *parsed_params);
+int odbc_get_dsn_info(TDS_ERRS *errs, const char *DSN, TDSCONNECTION * connection);
+#ifdef _WIN32
+int odbc_build_connect_string(TDS_ERRS *errs, TDS_PARSED_PARAM *params, char **out);
+#endif
 
 /*
  * convert_tds2sql.c
  */
-TDS_INT convert_tds2sql(TDSCONTEXT * context, int srctype, TDS_CHAR * src, TDS_UINT srclen, int desttype, TDS_CHAR * dest, SQLULEN destlen, const struct _drecord *drec_ixd);
+SQLLEN odbc_tds2sql(TDS_STMT * stmt, TDSCOLUMN *curcol, int srctype, TDS_CHAR * src, TDS_UINT srclen, int desttype, TDS_CHAR * dest, SQLULEN destlen, const struct _drecord *drec_ixd);
 
 /*
  * descriptor.c
@@ -448,6 +511,7 @@ SQLRETURN desc_free(TDS_DESC * desc);
 SQLRETURN desc_alloc_records(TDS_DESC * desc, unsigned count);
 SQLRETURN desc_copy(TDS_DESC * dest, TDS_DESC * src);
 SQLRETURN desc_free_records(TDS_DESC * desc);
+TDS_DBC *desc_get_dbc(TDS_DESC *desc);
 
 /*
  * odbc.c
@@ -479,8 +543,26 @@ void odbc_check_desc_extra(TDS_DESC * desc);
 /*
  * odbc_util.h
  */
-int odbc_set_stmt_query(struct _hstmt *stmt, const char *sql, int sql_len);
-int odbc_set_stmt_prepared_query(struct _hstmt *stmt, const char *sql, int sql_len);
+
+/* helpers for ODBC wide string support */
+#undef _wide
+#undef _WIDE
+#ifdef ENABLE_ODBC_WIDE
+typedef union {
+	char mb[1];
+	SQLWCHAR wide[1];
+} ODBC_CHAR;
+# define _wide ,wide
+# define _wide0 ,0
+# define _WIDE ,int wide
+#else
+# define _wide
+# define _wide0
+# define _WIDE
+# define ODBC_CHAR SQLCHAR
+#endif
+int odbc_set_stmt_query(struct _hstmt *stmt, const ODBC_CHAR *sql, int sql_len _WIDE);
+int odbc_set_stmt_prepared_query(struct _hstmt *stmt, const ODBC_CHAR *sql, int sql_len _WIDE);
 void odbc_set_return_status(struct _hstmt *stmt, unsigned int n_row);
 void odbc_set_return_params(struct _hstmt *stmt, unsigned int n_row);
 
@@ -491,12 +573,34 @@ int odbc_c_to_server_type(int c_type);
 
 void odbc_set_sql_type_info(TDSCOLUMN * col, struct _drecord *drec, SQLINTEGER odbc_ver);
 SQLINTEGER odbc_sql_to_displaysize(int sqltype, TDSCOLUMN *col);
-int odbc_get_string_size(int size, SQLCHAR * str);
+int odbc_get_string_size(int size, ODBC_CHAR * str _WIDE);
 void odbc_rdbms_version(TDSSOCKET * tds_socket, char *pversion_string);
 SQLINTEGER odbc_get_param_len(const struct _drecord *drec_axd, const struct _drecord *drec_ixd, const TDS_DESC* axd, unsigned int n_row);
 
-SQLRETURN odbc_set_string(SQLPOINTER buffer, SQLSMALLINT cbBuffer, SQLSMALLINT FAR * pcbBuffer, const char *s, int len);
-SQLRETURN odbc_set_string_i(SQLPOINTER buffer, SQLINTEGER cbBuffer, SQLINTEGER FAR * pcbBuffer, const char *s, int len);
+#ifdef ENABLE_ODBC_WIDE
+DSTR* odbc_dstr_copy_flag(TDS_DBC *dbc, DSTR *s, int size, ODBC_CHAR * str, int flag);
+#define odbc_dstr_copy(dbc, s, len, out) \
+	odbc_dstr_copy_flag(dbc, s, len, sizeof((out)->mb) ? (out) : (out), wide)
+#define odbc_dstr_copy_oct(dbc, s, len, out) \
+	odbc_dstr_copy_flag(dbc, s, len, out, wide|0x20)
+#else
+DSTR* odbc_dstr_copy(TDS_DBC *dbc, DSTR *s, int size, ODBC_CHAR * str);
+#define odbc_dstr_copy_oct odbc_dstr_copy
+#endif
+
+
+SQLRETURN odbc_set_string_flag(TDS_DBC *dbc, SQLPOINTER buffer, SQLINTEGER cbBuffer, void FAR * pcbBuffer, const char *s, int len, int flag);
+#ifdef ENABLE_ODBC_WIDE
+#define odbc_set_string(dbc, buf, buf_len, out_len, s, s_len) \
+	odbc_set_string_flag(dbc, sizeof((buf)->mb) ? (buf) : (buf), buf_len, out_len, s, s_len, (wide) | (sizeof(*(out_len)) == sizeof(SQLSMALLINT)?0:0x10))
+#define odbc_set_string_oct(dbc, buf, buf_len, out_len, s, s_len) \
+	odbc_set_string_flag(dbc, buf, buf_len, out_len, s, s_len, (wide) | (sizeof(*(out_len)) == sizeof(SQLSMALLINT)?0x20:0x30))
+#else
+#define odbc_set_string(dbc, buf, buf_len, out_len, s, s_len) \
+	odbc_set_string_flag(dbc, buf, buf_len, out_len, s, s_len, (sizeof(*(out_len)) == sizeof(SQLSMALLINT)?0:0x10))
+#define odbc_set_string_oct(dbc, buf, buf_len, out_len, s, s_len) \
+	odbc_set_string_flag(dbc, buf, buf_len, out_len, s, s_len, (sizeof(*(out_len)) == sizeof(SQLSMALLINT)?0x20:0x30))
+#endif
 
 SQLSMALLINT odbc_get_concise_sql_type(SQLSMALLINT type, SQLSMALLINT interval);
 SQLRETURN odbc_set_concise_sql_type(SQLSMALLINT concise_type, struct _drecord *drec, int check_only);
@@ -504,6 +608,7 @@ SQLSMALLINT odbc_get_concise_c_type(SQLSMALLINT type, SQLSMALLINT interval);
 SQLRETURN odbc_set_concise_c_type(SQLSMALLINT concise_type, struct _drecord *drec, int check_only);
 
 SQLLEN odbc_get_octet_len(int c_type, const struct _drecord *drec);
+void odbc_convert_err_set(struct _sql_errors *errs, TDS_INT err);
 
 /*
  * prepare_query.c
@@ -518,9 +623,34 @@ const char *parse_const_param(const char * s, TDS_SERVER_TYPE *type);
 /*
  * sql2tds.c
  */
-SQLRETURN sql2tds(TDS_STMT * stmt, const struct _drecord *drec_ixd, const struct _drecord *drec_axd, TDSCOLUMN *curcol, int compute_row, const TDS_DESC* axd, unsigned int n_row);
+SQLRETURN odbc_sql2tds(TDS_STMT * stmt, const struct _drecord *drec_ixd, const struct _drecord *drec_axd, TDSCOLUMN *curcol, int compute_row, const TDS_DESC* axd, unsigned int n_row);
 
-#if defined(__GNUC__) && __GNUC__ >= 4
+/*
+ * sqlwchar.c
+ */
+#if SIZEOF_SQLWCHAR != SIZEOF_WCHAR_T
+size_t sqlwcslen(const SQLWCHAR * s);
+#else
+#define sqlwcslen wcslen
+#endif
+
+#if SIZEOF_SQLWCHAR == 2
+# if WORDS_BIGENDIAN
+#  define ODBC_WIDE_NAME "UCS-2BE"
+# else
+#  define ODBC_WIDE_NAME "UCS-2LE"
+# endif
+#elif SIZEOF_SQLWCHAR == 4
+# if WORDS_BIGENDIAN
+#  define ODBC_WIDE_NAME "UCS-4BE"
+# else
+#  define ODBC_WIDE_NAME "UCS-4LE"
+# endif
+#else
+#error SIZEOF_SQLWCHAR not supported !!
+#endif
+
+#if defined(__GNUC__) && __GNUC__ >= 4 && !defined(__MINGW32__)
 #pragma GCC visibility pop
 #endif
 

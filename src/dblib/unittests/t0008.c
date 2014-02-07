@@ -5,7 +5,7 @@
 
 #include "common.h"
 
-static char software_version[] = "$Id: t0008.c,v 1.16 2007/12/04 02:06:38 jklowden Exp $";
+static char software_version[] = "$Id: t0008.c,v 1.19 2009/04/22 15:11:20 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 
@@ -13,7 +13,7 @@ static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 int
 main(int argc, char **argv)
 {
-	const int rows_to_add = 50;
+	const int rows_to_add = 48;
 	LOGINREC *login;
 	DBPROCESS *dbproc;
 	int i;
@@ -25,7 +25,7 @@ main(int argc, char **argv)
 
 	read_login_info(argc, argv);
 
-	fprintf(stdout, "Start\n");
+	fprintf(stdout, "Starting %s\n", argv[0]);
 	add_bread_crumb();
 
 	/* Fortify_EnterScope(); */
@@ -69,7 +69,7 @@ main(int argc, char **argv)
 	}
 
 	fprintf(stdout, "insert\n");
-	for (i = 1; i < rows_to_add; i++) {
+	for (i = 1; i <= rows_to_add; i++) {
 	char cmd[1024];
 
 		sprintf(cmd, "insert into #dblib0008 values (%d, 'row %03d')", i, i);
@@ -107,7 +107,7 @@ main(int argc, char **argv)
 
 	add_bread_crumb();
 
-	for (i = 1; i < rows_to_add; i++) {
+	for (i = 1; i <= rows_to_add; i++) {
 	char expected[1024];
 
 		sprintf(expected, "row %03d", i);
@@ -159,10 +159,8 @@ main(int argc, char **argv)
 	dbexit();
 	add_bread_crumb();
 
-	if (last_read == rows_to_add - 1)
-		printf("dblib okay for %s\n", __FILE__);
-	else
-		fprintf(stderr, "dblib failed for %s last_read %d\n", __FILE__, (int) last_read);
+	fprintf(stdout, "%s %s (last_read: %d)\n", __FILE__, ((last_read != rows_to_add)? "failed!" : "OK"), (int) last_read);
+
 	free_bread_crumb();
-	return (last_read == rows_to_add - 1) ? 0 : 1;
+	return (last_read == rows_to_add) ? 0 : 1;
 }

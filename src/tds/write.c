@@ -49,7 +49,7 @@
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: write.c,v 1.76 2006/12/26 14:56:21 freddy77 Exp $");
+TDS_RCSID(var, "$Id: write.c,v 1.79 2010/03/03 08:08:57 freddy77 Exp $");
 
 /**
  * \addtogroup network
@@ -61,12 +61,10 @@ TDS_RCSID(var, "$Id: write.c,v 1.76 2006/12/26 14:56:21 freddy77 Exp $");
  *		much like read() and memcpy()
  */
 int
-tds_put_n(TDSSOCKET * tds, const void *buf, int n)
+tds_put_n(TDSSOCKET * tds, const void *buf, size_t n)
 {
-	int left;
+	size_t left;
 	const unsigned char *bufp = (const unsigned char *) buf;
-
-	assert(n >= 0);
 
 	for (; n;) {
 		left = tds->env.block_size - tds->out_pos;
@@ -82,7 +80,7 @@ tds_put_n(TDSSOCKET * tds, const void *buf, int n)
 		} else {
 			memset(tds->out_buf + tds->out_pos, 0, left);
 		}
-		tds->out_pos += left;
+		tds->out_pos += (unsigned int)left;
 		n -= left;
 	}
 	return 0;
@@ -108,14 +106,20 @@ tds_put_string(TDSSOCKET * tds, const char *s, int len)
 
 	if (len < 0) {
 		if (client->min_bytes_per_char == 1) {	/* ascii or UTF-8 */
-			len = strlen(s);
-		} else if (client->min_bytes_per_char == 2 && client->max_bytes_per_char == 2) {	/* UCS-2 or variant */
+			len = (int)strlen(s);
+		} else if (client->min_bytes_per_char == 2) {	/* UCS-2 or variant */
 			const char *p = s;
 
 			while (p[0] || p[1])
 				p += 2;
-			len = p - s;
+			len = (int)(p - s);
 
+		} else if (client->min_bytes_per_char == 4) {	/* UCS-4 or variant */
+			const char *p = s;
+
+			while (p[0] || p[1] || p[2] || p[3])
+				p += 4;
+			len = (int)(p - s);
 		} else {
 			assert(client->min_bytes_per_char < 3);	/* FIXME */
 		}
@@ -149,7 +153,7 @@ tds_put_string(TDSSOCKET * tds, const char *s, int len)
 				tdsdump_log(TDS_DBG_NETWORK, "Error: tds_put_string: "
 							     "Gave up converting %d bytes due to error %d.\n", 
 							     (int) inbytesleft, errno);
-				tdsdump_dump_buf(TDS_DBG_NETWORK, "Troublesome bytes", s, (int) inbytesleft);
+				tdsdump_dump_buf(TDS_DBG_NETWORK, "Troublesome bytes", s, inbytesleft);
 			}
 
 			if (poutbuf == outbuf) {	/* tds_iconv did not convert anything, avoid infinite loop */
@@ -162,7 +166,7 @@ tds_put_string(TDSSOCKET * tds, const char *s, int len)
 		tds_put_n(tds, outbuf, poutbuf - outbuf);
 	}
 	tdsdump_log(TDS_DBG_NETWORK, "tds_put_string wrote %d bytes\n", (int) bytes_out);
-	return bytes_out;
+	return (int)bytes_out;
 }
 
 int
@@ -269,7 +273,7 @@ tds_put_smallint(TDSSOCKET * tds, TDS_SMALLINT si)
 int
 tds_put_byte(TDSSOCKET * tds, unsigned char c)
 {
-	if (tds->out_pos >= tds->env.block_size)
+	if (tds->out_pos >= (unsigned int)tds->env.block_size)
 		tds_write_packet(tds, 0x0);
 	tds->out_buf[tds->out_pos++] = c;
 	return 0;

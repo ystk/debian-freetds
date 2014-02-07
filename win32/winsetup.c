@@ -57,6 +57,9 @@
 #include "tdsodbc.h"
 #include "tdsstring.h"
 #include "tdsconvert.h"
+#include "replacements.h"
+
+#include <olectl.h>
 
 #ifdef DMALLOC
 #include <dmalloc.h>
@@ -133,7 +136,7 @@ parse_wacky_dsn_string(LPCSTR attribs, DSNINFO * di)
 	}
 
 	/* let odbc_parse_connect_string() parse the ;-delimited version */
-	odbc_parse_connect_string(build, build + strlen(build), di->connection);
+	odbc_parse_connect_string(NULL, build, build + strlen(build), di->connection, NULL);
 }
 
 
@@ -159,7 +162,7 @@ write_all_strings(DSNINFO * di)
 	sprintf(tmp, "%u", di->connection->port);
 	WRITESTR("Port", tmp);
 
-	sprintf(tmp, "%d.%d", di->connection->major_version, di->connection->minor_version);
+	sprintf(tmp, "%d.%d", TDS_MAJOR(di->connection), TDS_MINOR(di->connection));
 	WRITESTR("TDS_Version", tmp);
 
 	sprintf(tmp, "%u", di->connection->text_size);
@@ -192,7 +195,7 @@ validate(DSNINFO * di)
 	return NULL;
 }
 
-#ifndef WIN64
+#ifndef _WIN64
 #define GetWindowUserData(wnd)       GetWindowLong((wnd), GWL_USERDATA)
 #define SetWindowUserData(wnd, data) SetWindowLong((wnd), GWL_USERDATA, (data))
 #else
@@ -215,7 +218,7 @@ DSNDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 	const char *pstr;
 	int major, minor, i;
 	static const char *protocols[] = {
-		"TDS 4.2", "TDS 4.6", "TDS 5.0", "TDS 7.0", "TDS 8.0", NULL
+		"TDS 4.2", "TDS 4.6", "TDS 5.0", "TDS 7.0", "TDS 7.1", "TDS 7.2", NULL
 	};
 
 	switch (message) {
@@ -232,7 +235,7 @@ DSNDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 
 		/* copy info from DSNINFO to the dialog */
 		SendDlgItemMessage(hDlg, IDC_DSNNAME, WM_SETTEXT, 0, (LPARAM) tds_dstr_cstr(&di->dsn));
-		sprintf(tmp, "TDS %d.%d", di->connection->major_version, di->connection->minor_version);
+		sprintf(tmp, "TDS %d.%d", TDS_MAJOR(di->connection), TDS_MINOR(di->connection));
 		SendDlgItemMessage(hDlg, IDC_PROTOCOL, CB_SELECTSTRING, -1, (LPARAM) tmp);
 		SendDlgItemMessage(hDlg, IDC_ADDRESS, WM_SETTEXT, 0, (LPARAM) tds_dstr_cstr(&di->connection->server_name));
 		sprintf(tmp, "%u", di->connection->port);
@@ -261,8 +264,11 @@ DSNDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 		SendDlgItemMessage(hDlg, IDC_PROTOCOL, WM_GETTEXT, sizeof tmp, (LPARAM) tmp);
 		minor = 0;
 		if (sscanf(tmp, "%*[^0-9]%d.%d", &major, &minor) > 1) {
-			di->connection->major_version = major;
-			di->connection->minor_version = minor;
+			if (major == 8 && minor == 0) {
+				major = 7;
+				minor = 1;
+			}
+			di->connection->tds_version = (major << 8) | minor;
 		}
 		SendDlgItemMessage(hDlg, IDC_ADDRESS, WM_GETTEXT, sizeof tmp, (LPARAM) tmp);
 		tds_dstr_copy(&di->connection->server_name, tmp);
@@ -391,18 +397,21 @@ ConfigDSN(HWND hwndParent, WORD fRequest, LPCSTR lpszDriver, LPCSTR lpszAttribut
 BOOL INSTAPI
 ConfigDriver(HWND hwndParent, WORD fRequest, LPCSTR lpszDriver, LPCSTR lpszArgs, LPSTR lpszMsg, WORD cbMsgMax, WORD * pcbMsgOut)
 {
+	const char *msg = NULL;
+
 	/* TODO finish ?? */
 	switch (fRequest) {
 	case ODBC_INSTALL_DRIVER:
-		/* FIXME possible buffer overflow */
-		strcpy(lpszMsg, "Hello");
-		*pcbMsgOut = strlen(lpszMsg);
+		msg = "Hello";
 		break;
 	case ODBC_REMOVE_DRIVER:
-		/* FIXME possible buffer overflow */
-		strcpy(lpszMsg, "Goodbye");
-		*pcbMsgOut = strlen(lpszMsg);
+		msg = "Goodbye";
 		break;
+	}
+
+	if (msg && lpszMsg && cbMsgMax > strlen(msg)) {
+		strcpy(lpszMsg, msg);
+		*pcbMsgOut = strlen(msg);
 	}
 	return TRUE;
 }
@@ -412,3 +421,55 @@ ConfigTranslator(HWND hwndParent, DWORD * pvOption)
 {
 	return TRUE;
 }
+
+/**
+ * Allow install using regsvr32
+ */
+HRESULT WINAPI
+DllRegisterServer(void)
+{
+	TCHAR fn[MAX_PATH], full_fn[MAX_PATH];
+	LPTSTR name;
+	WORD len_out;
+	DWORD cnt;
+	char *desc = NULL;
+	BOOL b_res;
+
+	if (!GetModuleFileName(hinstFreeTDS, fn, TDS_VECTOR_SIZE(fn)))
+		return SELFREG_E_CLASS;
+	if (!GetFullPathName(fn, TDS_VECTOR_SIZE(full_fn), full_fn, &name) || !name || full_fn == name)
+		return SELFREG_E_CLASS;
+
+	if (asprintf(&desc, "FreeTDS%c"
+		"APILevel=2%c"
+		"ConnectFunctions=YYN%c"
+		"DriverODBCVer=03.00%c"
+		"FileUsage=0%c"
+		"SQLLevel=2%c"
+		"Setup=%s%c"
+		"Driver=%s%c",
+		0, 0, 0, 0, 0, 0,
+		name, 0, name, 0
+		) < 0)
+		return SELFREG_E_CLASS;
+	name[-1] = 0;
+
+	b_res = SQLInstallDriverEx(desc, full_fn, fn, TDS_VECTOR_SIZE(fn), &len_out, ODBC_INSTALL_COMPLETE, &cnt);
+	free(desc);
+	if (!b_res)
+		return SELFREG_E_CLASS;
+	return S_OK;
+}
+
+/**
+ * Allow uninstall using regsvr32 command
+ */
+HRESULT WINAPI
+DllUnregisterServer(void)
+{
+	DWORD cnt;
+	if (!SQLRemoveDriver("FreeTDS", FALSE, &cnt))
+		return SELFREG_E_CLASS;
+	return S_OK;
+}
+

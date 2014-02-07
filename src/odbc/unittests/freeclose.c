@@ -43,18 +43,21 @@
 #include <netinet/in.h>
 #endif /* HAVE_NETINET_IN_H */
 
-#if defined(TDS_HAVE_PTHREAD_MUTEX) && HAVE_ALARM && HAVE_FSTAT && defined(S_IFSOCK)
+#if (defined(TDS_HAVE_PTHREAD_MUTEX) && HAVE_ALARM && HAVE_FSTAT && defined(S_IFSOCK)) || defined(_WIN32)
 
 #include <ctype.h>
+#if HAVE_PTHREAD
 #include <pthread.h>
+#endif
 
 #include "tds.h"
 
-static char software_version[] = "$Id: freeclose.c,v 1.6 2007/11/26 18:12:31 freddy77 Exp $";
+static char software_version[] = "$Id: freeclose.c,v 1.14 2010/09/01 08:39:38 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 /* this crazy test test that we do not send too much prepare ... */
 
+#ifndef _WIN32
 static int
 find_last_socket(void)
 {
@@ -69,21 +72,49 @@ find_last_socket(void)
 	}
 	return max_socket;
 }
+#else
+static TDS_SYS_SOCKET
+find_last_socket(void)
+{
+	TDS_SYS_SOCKET max_socket = INVALID_SOCKET;
+	int i;
+
+	for (i = 4; i <= (4096*4); i += 4) {
+		struct sockaddr addr;
+		socklen_t addr_len;
+
+		if (tds_getpeername((TDS_SYS_SOCKET) i, &addr, &addr_len))
+			continue;
+		max_socket = (TDS_SYS_SOCKET) i;
+	}
+	
+	return max_socket;
+}
+#endif
 
 static struct sockaddr remote_addr;
-socklen_t remote_addr_len;
+static socklen_t remote_addr_len;
 
-static pthread_t      fake_thread;
 static TDS_SYS_SOCKET fake_sock;
 
-static void *fake_thread_proc(void * arg);
+#ifndef _WIN32
+static pthread_t      fake_thread;
+#define THREADAPI
+#define THREADRET void*
+#else
+static HANDLE fake_thread;
+#define THREADAPI WINAPI
+#define THREADRET DWORD
+#define pthread_join(th,fl) WaitForSingleObject(th,INFINITE)
+#define alarm(n) do { ; } while(0)
+#endif
+static THREADRET THREADAPI fake_thread_proc(void *arg);
 
 static int
 init_fake_server(int ip_port)
 {
 	struct sockaddr_in sin;
 	TDS_SYS_SOCKET s;
-	int err;
 
 	memset(&sin, 0, sizeof(sin));
 	sin.sin_addr.s_addr = INADDR_ANY;
@@ -100,11 +131,18 @@ init_fake_server(int ip_port)
 		return 1;
 	}
 	listen(s, 5);
-	err = pthread_create(&fake_thread, NULL, fake_thread_proc, int2ptr(s));
-	if (err != 0) {
+#ifndef _WIN32
+	if (pthread_create(&fake_thread, NULL, fake_thread_proc, int2ptr(s)) != 0) {
 		perror("pthread_create");
 		exit(1);
 	}
+#else
+	fake_thread = CreateThread(NULL, 0, fake_thread_proc, int2ptr(s), 0, NULL);
+	if (!fake_thread) {
+		fprintf(stderr, "CreateThread error %u\n", (unsigned) GetLastError());
+		exit(1);
+	}
+#endif
 	return 0;
 }
 
@@ -175,7 +213,7 @@ count_insert(const char* buf, size_t len)
 static unsigned int round_trips = 0;
 static enum { sending, receiving } flow = sending;
 
-static void *
+static THREADRET THREADAPI
 fake_thread_proc(void * arg)
 {
 	TDS_SYS_SOCKET s = ptr2int(arg), server_sock;
@@ -188,7 +226,7 @@ fake_thread_proc(void * arg)
 	memset(&sin, 0, sizeof(sin));
 	len = sizeof(sin);
 	alarm(30);
-	if ((fake_sock = accept(s, (struct sockaddr *) &sin, &len)) < 0) {
+	if ((fake_sock = tds_accept(s, (struct sockaddr *) &sin, &len)) < 0) {
 		perror("accept");
 		exit(1);
 	}
@@ -225,7 +263,7 @@ fake_thread_proc(void * arg)
 		res = select(max_fd + 1, &fds_read, &fds_write, &fds_error, NULL);
 		alarm(0);
 		if (res < 0) {
-			if (errno == EINTR)
+			if (sock_errno == TDSSOCK_EINTR)
 				continue;
 			perror("select");
 			exit(1);
@@ -266,35 +304,42 @@ fake_thread_proc(void * arg)
 	}
 	CLOSESOCKET(fake_sock);
 	CLOSESOCKET(server_sock);
-	return NULL;
+	return (THREADRET) 0;
 }
 
 int
 main(int argc, char **argv)
 {
-	SQLHSTMT hstmt = NULL;
 	SQLLEN sql_nts = SQL_NTS;
 	const char *query;
 	SQLINTEGER id = 0;
 	char string[64];
-	int last_socket, port;
+	TDS_SYS_SOCKET last_socket;
+	int port;
 	const int num_inserts = 20;
+	int is_freetds;
 
-	Connect();
+#ifdef _WIN32
+	WSADATA wsaData;
+	WSAStartup(MAKEWORD(1, 1), &wsaData);
+#endif
+
+	odbc_connect();
 
 	last_socket = find_last_socket();
-	if (last_socket < 0) {
+	if (TDS_IS_SOCKET_INVALID(last_socket)) {
 		fprintf(stderr, "Error finding last socket opened\n");
 		return 1;
 	}
 
 	remote_addr_len = sizeof(remote_addr);
-	if (getpeername(last_socket, &remote_addr, &remote_addr_len)) {
+	if (tds_getpeername(last_socket, &remote_addr, &remote_addr_len)) {
 		fprintf(stderr, "Unable to get remote address\n");
 		return 1;
 	}
 
-	Disconnect();
+	is_freetds = odbc_driver_is_freetds();
+	odbc_disconnect();
 
 	/* init fake server, behave like a proxy */
 	for (port = 12340; port < 12350; ++port)
@@ -307,17 +352,28 @@ main(int argc, char **argv)
 	printf("Fake server binded at port %d\n", port);
 
 	/* override connections */
-	setenv("TDSHOST", "127.0.0.1", 1);
-	sprintf(string, "%d", port);
-	setenv("TDSPORT", string, 1);
+	if (is_freetds) {
+		setenv("TDSHOST", "127.0.0.1", 1);
+		sprintf(string, "%d", port);
+		setenv("TDSPORT", string, 1);
 
-	Connect();
+		odbc_connect();
+	} else {
+		char tmp[2048];
+		SQLSMALLINT len;
+
+		CHKAllocEnv(&odbc_env, "S");
+		CHKAllocConnect(&odbc_conn, "S");
+		sprintf(tmp, "DRIVER={SQL Server};SERVER=127.0.0.1,%d;UID=%s;PWD=%s;DATABASE=%s;Network=DBMSSOCN;", port, odbc_user, odbc_password, odbc_database);
+		printf("connection string: %s\n", tmp);
+		CHKDriverConnect(NULL, (SQLCHAR *) tmp, SQL_NTS, (SQLCHAR *) tmp, sizeof(tmp), &len, SQL_DRIVER_NOPROMPT, "SI");
+		CHKAllocStmt(&odbc_stmt, "S");
+	}
 
 	/* real test */
-	Command(Statement, "CREATE TABLE #test(i int, c varchar(40))");
+	odbc_command("CREATE TABLE #test(i int, c varchar(40))");
 
-	if (!SQL_SUCCEEDED(SQLAllocHandle(SQL_HANDLE_STMT, Connection, &hstmt)))
-		return 1;
+	odbc_reset_statement();
 
 	/* do not take into account connection statistics */
 	round_trips = 0;
@@ -325,41 +381,61 @@ main(int argc, char **argv)
 
 	query = "insert into #test values (?, ?)";
 
-	if (!SQL_SUCCEEDED(SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, sizeof(id), 0, &id, 0, &sql_nts))
-	    ||
-	    !SQL_SUCCEEDED(SQLBindParameter
-			   (hstmt, 2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, sizeof(string), 0, string, 0, &sql_nts))) 
-	{
-		SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-		return 1;
-	}
+	CHKBindParameter(1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, sizeof(id), 0, &id, 0, &sql_nts, "SI");
+	CHKBindParameter(2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, sizeof(string), 0, string, 0, &sql_nts, "SI");
 
-	if (!SQL_SUCCEEDED(SQLPrepare(hstmt, (SQLCHAR *) query, SQL_NTS))) {
-		SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-		return 1;
-	}
+	CHKPrepare((SQLCHAR *) query, SQL_NTS, "SI");
+	printf("%u round trips %u inserts\n", round_trips, inserts);
 
 	for (id = 0; id < num_inserts; id++) {
 		sprintf(string, "This is a test (%d)", (int) id);
-		if (!SQL_SUCCEEDED(SQLExecute(hstmt))) {
-			SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-			return 1;
-		}
-		SQLFreeStmt(hstmt, SQL_CLOSE);
+		CHKExecute("SI");
+		CHKFreeStmt(SQL_CLOSE, "S");
 	}
 
-	SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+	printf("%u round trips %u inserts\n", round_trips, inserts);
+	odbc_reset_statement();
 
-	Disconnect();
-
-	alarm(10);
-	pthread_join(fake_thread, NULL);
-
-	if (inserts > 2 || round_trips > num_inserts * 2 + 10) {
+	if (inserts > 1 || round_trips > num_inserts * 2 + 6) {
 		fprintf(stderr, "Too much round trips (%u) or insert (%u) !!!\n", round_trips, inserts);
 		return 1;
 	}
 	printf("%u round trips %u inserts\n", round_trips, inserts);
+
+#ifdef ENABLE_DEVELOPING
+	/* check for SQL_RESET_PARAMS */
+	round_trips = 0;
+	inserts = 0;
+
+	CHKBindParameter(1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, sizeof(id), 0, &id, 0, &sql_nts, "SI");
+	CHKBindParameter(2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, sizeof(string), 0, string, 0, &sql_nts, "SI");
+
+	CHKPrepare((SQLCHAR *) query, SQL_NTS, "SI");
+	printf("%u round trips %u inserts\n", round_trips, inserts);
+
+	for (id = 0; id < num_inserts; id++) {
+		CHKBindParameter(1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, sizeof(id), 0, &id, 0, &sql_nts, "SI");
+		CHKBindParameter(2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, sizeof(string), 0, string, 0, &sql_nts, "SI");
+
+		sprintf(string, "This is a test (%d)", (int) id);
+		CHKExecute("SI");
+		CHKFreeStmt(SQL_RESET_PARAMS, "S");
+	}
+
+	printf("%u round trips %u inserts\n", round_trips, inserts);
+	odbc_reset_statement();
+
+	if (inserts > 1 || round_trips > num_inserts * 2 + 6) {
+		fprintf(stderr, "Too much round trips (%u) or insert (%u) !!!\n", round_trips, inserts);
+		return 1;
+	}
+	printf("%u round trips %u inserts\n", round_trips, inserts);
+#endif
+
+	odbc_disconnect();
+
+	alarm(10);
+	pthread_join(fake_thread, NULL);
 
 	return 0;
 }

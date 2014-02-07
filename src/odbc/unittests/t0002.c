@@ -1,81 +1,54 @@
 #include "common.h"
 
-static char software_version[] = "$Id: t0002.c,v 1.12 2005/06/29 07:21:24 freddy77 Exp $";
+static char software_version[] = "$Id: t0002.c,v 1.17 2010/07/05 09:20:33 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
+
+#define SWAP_STMT(b) do { SQLHSTMT xyz = odbc_stmt; odbc_stmt = b; b = xyz; } while(0)
 
 int
 main(int argc, char *argv[])
 {
+	HSTMT old_odbc_stmt;
 
-	int res;
-	HSTMT stmt;
+	odbc_connect();
 
-	Connect();
+	odbc_command("if object_id('tempdb..#odbctestdata') is not null drop table #odbctestdata");
 
-	if (CommandWithResult(Statement, "drop table #odbctestdata") != SQL_SUCCESS)
-		printf("Unable to execute statement\n");
-
-	Command(Statement, "create table #odbctestdata (i int)");
-	Command(Statement, "insert #odbctestdata values (123)");
+	odbc_command("create table #odbctestdata (i int)");
+	odbc_command("insert #odbctestdata values (123)");
 
 	/*
 	 * now we allocate another statement, select, get all results
 	 * then make another query with first select and drop this statement
 	 * result should not disappear (required for DBD::ODBC)
 	 */
+	old_odbc_stmt = odbc_stmt;
+	odbc_stmt = SQL_NULL_HSTMT;
+	CHKAllocStmt(&odbc_stmt, "S");
 
-	if (SQLAllocStmt(Connection, &stmt) != SQL_SUCCESS) {
-		printf("Unable to allocate statement\n");
-		CheckReturn();
-		exit(1);
-	}
+	odbc_command("select * from #odbctestdata where 0=1");
 
-	Command(stmt, "select * from #odbctestdata where 0=1");
+	CHKFetch("No");
 
-	if (SQLFetch(stmt) != SQL_NO_DATA) {
-		printf("Data not expected\n");
-		exit(1);
-	}
+	CHKCloseCursor("SI");
 
-	res = SQLCloseCursor(stmt);
-	if (!SQL_SUCCEEDED(res)) {
-		printf("Unable to close cursr\n");
-		CheckReturn();
-		exit(1);
-	}
-
-	Command(Statement, "select * from #odbctestdata");
+	SWAP_STMT(old_odbc_stmt);
+	odbc_command("select * from #odbctestdata");
+	SWAP_STMT(old_odbc_stmt);
 
 	/* drop first statement .. data should not disappear */
-	if (SQLFreeStmt(stmt, SQL_DROP) != SQL_SUCCESS) {
-		printf("Error dropping??\n");
-		exit(1);
-	}
+	CHKFreeStmt(SQL_DROP, "S");
+	odbc_stmt = old_odbc_stmt;
 
-	res = SQLFetch(Statement);
-	if (res != SQL_SUCCESS && res != SQL_SUCCESS_WITH_INFO) {
-		printf("Unable to fetch row. Drop of previous statement discard results... bad!\n");
-		CheckReturn();
-		exit(1);
-	}
+	CHKFetch("SI");
 
-	res = SQLFetch(Statement);
-	if (res != SQL_NO_DATA) {
-		printf("Unable to fetch row\n");
-		CheckReturn();
-		exit(1);
-	}
+	CHKFetch("No");
 
-	res = SQLCloseCursor(Statement);
-	if (!SQL_SUCCEEDED(res)) {
-		printf("Unable to close cursr\n");
-		CheckReturn();
-		exit(1);
-	}
+	CHKCloseCursor("SI");
 
-	Command(Statement, "drop table #odbctestdata");
+	odbc_command("drop table #odbctestdata");
 
-	Disconnect();
+	odbc_disconnect();
 
 	printf("Done.\n");
 	return 0;

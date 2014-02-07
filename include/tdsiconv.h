@@ -20,7 +20,7 @@
 #ifndef _tds_iconv_h_
 #define _tds_iconv_h_
 
-/* $Id: tdsiconv.h,v 1.36 2007/03/12 13:28:50 freddy77 Exp $ */
+/* $Id: tdsiconv.h,v 1.40 2010/07/25 08:40:19 freddy77 Exp $ */
 
 #if HAVE_ICONV
 #include <iconv.h>
@@ -50,7 +50,7 @@ typedef void *iconv_t;
 #include <stdlib.h>
 #endif /* HAVE_STDLIB_H */
 
-#if defined(__GNUC__) && __GNUC__ >= 4
+#if defined(__GNUC__) && __GNUC__ >= 4 && !defined(__MINGW32__)
 #pragma GCC visibility push(hidden)
 #endif
 
@@ -60,50 +60,6 @@ extern "C"
 #endif
 
 #if ! HAVE_ICONV
-
-	/* FYI, the first 4 entries look like this:
-	 *      {"ISO-8859-1",  1, 1}, -> 0
-	 *      {"US-ASCII",    1, 4}, -> 1
-	 *      {"UCS-2LE",     2, 2}, -> 2
-	 *      {"UCS-2BE",     2, 2}, -> 3
-	 *
-	 * These conversions are supplied by src/replacements/iconv.c for the sake of those who don't 
-	 * have or otherwise need an iconv.
-	 */
-enum ICONV_CD_VALUE
-{
-	  Like_to_Like = 0x100
-	, Latin1_ASCII  = 0x01
-	, ASCII_Latin1  = 0x10
-
-	, Latin1_UCS2LE = 0x02
-	, UCS2LE_Latin1 = 0x20
-	, ASCII_UCS2LE  = 0x12
-	, UCS2LE_ASCII  = 0x21
-
-	, Latin1_UTF8	= 0x03
-	, UTF8_Latin1	= 0x30
-	, ASCII_UTF8	= 0x13
-	, UTF8_ASCII	= 0x31
-	, UCS2LE_UTF8	= 0x23
-	, UTF8_UCS2LE	= 0x32
-
-#ifdef DOS32X
-	, WinEE_UCS2LE  = 0x42
-	, UCS2LE_WinEE  = 0x24
-	, WinCYR_UCS2LE = 0x52
-	, UCS2LE_WinCYR = 0x25
-	, WinTUR_UCS2LE = 0x62
-	, UCS2LE_WinTUR = 0x26
-	, WinARA_UCS2LE = 0x72
-	, UCS2LE_WinARA = 0x27
-#endif
-	/* these aren't needed 
-	 * , Latin1_UCS2BE = 0x03
-	 * , UCS2BE_Latin1 = 0x30
-	 */
-};
-
 iconv_t tds_sys_iconv_open(const char *tocode, const char *fromcode);
 size_t tds_sys_iconv(iconv_t cd, const char **inbuf, size_t * inbytesleft, char **outbuf, size_t * outbytesleft);
 int tds_sys_iconv_close(iconv_t cd);
@@ -123,7 +79,7 @@ typedef struct _character_set_alias
 	int canonic;
 } CHARACTER_SET_ALIAS;
 
-typedef struct _tds_errno_message_flags {
+typedef struct tds_errno_message_flags {
 	unsigned int e2big:1;
 	unsigned int eilseq:1;
 	unsigned int einval:1;
@@ -166,12 +122,13 @@ size_t tds_iconv(TDSSOCKET * tds, const TDSICONV * char_conv, TDS_ICONV_DIRECTIO
 		 const char **inbuf, size_t * inbytesleft, char **outbuf, size_t * outbytesleft);
 const char *tds_canonical_charset_name(const char *charset_name);
 const char *tds_sybase_charset_name(const char *charset_name);
+TDSICONV *tds_iconv_get(TDSSOCKET * tds, const char *client_charset, const char *server_charset);
 
 #ifdef __cplusplus
 }
 #endif
 
-#if defined(__GNUC__) && __GNUC__ >= 4
+#if defined(__GNUC__) && __GNUC__ >= 4 && !defined(__MINGW32__)
 #pragma GCC visibility pop
 #endif
 

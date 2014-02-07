@@ -24,7 +24,7 @@
  * Internal (not part of the exposed API) prototypes and such.
  */
 
-#if defined(__GNUC__) && __GNUC__ >= 4
+#if defined(__GNUC__) && __GNUC__ >= 4 && !defined(__MINGW32__)
 #pragma GCC visibility push(hidden)
 #endif
 
@@ -36,7 +36,7 @@ extern "C"
 #endif
 #endif
 
-static const char rcsid_ctlib_h[] = "$Id: ctlib.h,v 1.25 2007/06/25 09:48:20 freddy77 Exp $";
+static const char rcsid_ctlib_h[] = "$Id: ctlib.h,v 1.30 2010/10/05 08:36:36 freddy77 Exp $";
 static const void *const no_unused_ctlib_h_warn[] = { rcsid_ctlib_h, no_unused_ctlib_h_warn };
 
 #include <tds.h>
@@ -127,6 +127,7 @@ struct _cs_connection
 	CS_LOCALE *locale;
 	CS_COMMAND_LIST *cmds;
 	CS_DYNAMIC_LIST *dynlist;
+	char *server_addr;
 };
 
 /*
@@ -139,7 +140,7 @@ typedef struct _cs_param
 	struct _cs_param *next;
 	char *name;
 	int status;
-	int type;
+	int datatype;
 	CS_INT maxlen;
 	CS_INT scale;
 	CS_INT precision;
@@ -238,18 +239,11 @@ struct _cs_command_list
 	struct _cs_command *cmd;
 	struct _cs_command_list *next;
 };
- 
+
 struct _cs_blkdesc
 {
 	CS_CONNECTION *con;
-	CS_CHAR *tablename;
-	CS_CHAR *insert_stmt;
-	CS_INT direction;
-	CS_INT identity_insert_on;
-	CS_INT bind_count;
-	CS_INT xfer_init;
-	CS_INT var_cols;
-	TDSRESULTINFO *bindinfo;
+	TDSBCPINFO bcpinfo;
 };
 
 
@@ -277,7 +271,7 @@ int _ct_handle_server_message(const TDSCONTEXT * ctxptr, TDSSOCKET * tdsptr, TDS
 int _ct_handle_client_message(const TDSCONTEXT * ctxptr, TDSSOCKET * tdsptr, TDSMESSAGE * msgptr);
 int _ct_get_server_type(int datatype);
 int _ct_bind_data(CS_CONTEXT *ctx, TDSRESULTINFO * resinfo, TDSRESULTINFO *bindinfo, CS_INT offset);
-int _ct_get_client_type(int datatype, int usertype, int size);
+int _ct_get_client_type(TDSCOLUMN *col);
 void _ctclient_msg(CS_CONNECTION * con, const char *funcname, int layer, int origin, int severity, int number,
 		   const char *fmt, ...);
 CS_INT _ct_diag_clearmsg(CS_CONTEXT * context, CS_INT type);
@@ -292,7 +286,7 @@ int _cs_locale_copy_inplace(CS_LOCALE *new_locale, CS_LOCALE *orig);
 }
 #endif
 
-#if defined(__GNUC__) && __GNUC__ >= 4
+#if defined(__GNUC__) && __GNUC__ >= 4 && !defined(__MINGW32__)
 #pragma GCC visibility pop
 #endif
 

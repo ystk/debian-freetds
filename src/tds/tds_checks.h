@@ -20,7 +20,10 @@
 #ifndef TDS_CHECKS_H
 #define TDS_CHECKS_H
 
-/* $Id: tds_checks.h,v 1.3 2007/06/19 13:31:34 freddy77 Exp $ */
+/* $Id: tds_checks.h,v 1.6 2010/01/25 23:05:59 freddy77 Exp $ */
+#if defined(__GNUC__) && __GNUC__ >= 4 && !defined(__MINGW32__)
+#pragma GCC visibility push(hidden)
+#endif
 
 #if ENABLE_EXTRA_CHECKS
 #define CHECK_STRUCT_EXTRA(func,s) func(s)
@@ -45,9 +48,9 @@ void tds_check_column_extra(const TDSCOLUMN * column);
 void tds_check_resultinfo_extra(const TDSRESULTINFO * res_info);
 void tds_check_cursor_extra(const TDSCURSOR * cursor);
 void tds_check_dynamic_extra(const TDSDYNAMIC * dynamic);
-
-int tds_get_cardinal_type(int datatype);
-int tds_get_varint_size(TDSSOCKET * tds, int datatype);
 #endif
 
+#if defined(__GNUC__) && __GNUC__ >= 4 && !defined(__MINGW32__)
+#pragma GCC visibility pop
+#endif
 #endif /* TDS_CHECKS_H */

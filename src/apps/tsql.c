@@ -1,6 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005 Brian Bruns
- * Copyright (C) 2006, 2007  Frediano Ziglio
+ * Copyright (C) 2006, 2007, 2008, 2009  Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -59,7 +59,9 @@
 #endif /* HAVE_STRING_H */
 
 #if HAVE_UNISTD_H
-#include <unistd.h>
+# include <unistd.h>
+#elif defined(_WIN32)
+# include <io.h>
 #endif /* HAVE_UNISTD_H */
 
 /* HP-UX require some constants defined by limits.h */
@@ -85,7 +87,9 @@
 #include "tdsconvert.h"
 #include "replacements.h"
 
-TDS_RCSID(var, "$Id: tsql.c,v 1.112.2.1 2008/01/11 12:46:52 freddy77 Exp $");
+TDS_RCSID(var, "$Id: tsql.c,v 1.140 2011/03/22 17:54:09 jklowden Exp $");
+
+#define TDS_ISSPACE(c) isspace((unsigned char) (c))
 
 enum
 {
@@ -93,23 +97,27 @@ enum
 	OPT_TIMER =    0x02,
 	OPT_NOFOOTER = 0x04,
 	OPT_NOHEADER = 0x08,
-	OPT_QUIET =    0x10
+	OPT_QUIET =    0x10,
+	OPT_VERBOSE =  0x20,
+	OPT_INSTANCES= 0x40
 };
 
 static int istty = 0;
 static int global_opt_flags = 0;
+
 #define QUIET (global_opt_flags & OPT_QUIET)
+#define VERBOSE (global_opt_flags & OPT_VERBOSE)
 
 static char *opt_col_term = "\t";
 static char *opt_row_term = "\n";
 static char *opt_default_db = NULL;
 
 static int do_query(TDSSOCKET * tds, char *buf, int opt_flags);
-static void tsql_print_usage(const char *progname);
 static int get_opt_flags(char *s, int *opt_flags);
 static void populate_login(TDSLOGIN * login, int argc, char **argv);
 static int tsql_handle_message(const TDSCONTEXT * context, TDSSOCKET * tds, TDSMESSAGE * msg);
-static void slurp_input_file(char *fname, char **mybuf, int *bufsz, size_t *buflen, int *line);
+static int tsql_handle_error  (const TDSCONTEXT * context, TDSSOCKET * tds, TDSMESSAGE * msg);
+static void slurp_input_file(char *fname, char **mybuf, size_t *bufsz, size_t *buflen, int *line);
 
 static char *
 tsql_readline(char *prompt)
@@ -132,7 +140,7 @@ tsql_readline(char *prompt)
 		printf("%s", prompt);
 	for (;;) {
 		/* read a piece */
-		if (fgets(line + pos, sz - pos, stdin) == NULL) {
+		if (fgets(line + pos, (int)(sz - pos), stdin) == NULL) {
 			if (pos)
 				return line;
 			break;
@@ -190,6 +198,7 @@ do_query(TDSSOCKET * tds, char *buf, int opt_flags)
 	}
 
 	while ((rc = tds_process_tokens(tds, &resulttype, NULL, TDS_TOKEN_RESULTS)) == TDS_SUCCEED) {
+		const int stop_mask = TDS_STOPAT_ROWFMT|TDS_RETURN_DONE|TDS_RETURN_ROW|TDS_RETURN_COMPUTE;
 		if (opt_flags & OPT_TIMER) {
 			gettimeofday(&start, NULL);
 			print_rows = 0;
@@ -207,7 +216,7 @@ do_query(TDSSOCKET * tds, char *buf, int opt_flags)
 		case TDS_COMPUTE_RESULT:
 		case TDS_ROW_RESULT:
 			rows = 0;
-			while ((rc = tds_process_tokens(tds, &resulttype, NULL, TDS_STOPAT_ROWFMT|TDS_RETURN_DONE|TDS_RETURN_ROW|TDS_RETURN_COMPUTE)) == TDS_SUCCEED) {
+			while ((rc = tds_process_tokens(tds, &resulttype, NULL, stop_mask)) == TDS_SUCCEED) {
 				if (resulttype != TDS_ROW_RESULT && resulttype != TDS_COMPUTE_RESULT)
 					break;
 
@@ -228,7 +237,7 @@ do_query(TDSSOCKET * tds, char *buf, int opt_flags)
 					ctype = tds_get_conversion_type(col->column_type, col->column_size);
 
 					src = col->column_data;
-					if (is_blob_type(col->column_type))
+					if (is_blob_col(col) && col->column_type != SYBVARIANT)
 						src = (unsigned char *) ((TDSBLOB *) src)->textvalue;
 					srclen = col->column_cur_size;
 
@@ -285,20 +294,14 @@ do_query(TDSSOCKET * tds, char *buf, int opt_flags)
 }
 
 static void
-tsql_print_usage(const char *progname)
+reset_getopt(void)
 {
-	fprintf(stderr,
-		"Usage:\t%s [-S <server> | -H <hostname> -p <port>] -U <username> [-P <password>] [-I <config file>] [-o <options>] [-t delim] [-r delim] [-D database]\n"
-		"\t%s -C\n"
-		"Options:\n"
-		"\tf\tDo not print footer\n"
-		"\th\tDo not print header\n"
-		"\tt\tPrint time informations\n"
-		"\tv\tPrint TDS version\n"
-		"\tq\tQuiet\n\n"
-		"\tDelimiters can be multi-char strings appropriately escaped for your shell.\n"
-		"\tDefault column delimitor is <tab>; default row delimiter is <newline>\n",
-		progname, progname);
+#ifdef HAVE_GETOPT_OPTRESET
+	optreset = 1;
+	optind = 1;
+#else
+	optind = 0;
+#endif
 }
 
 /*
@@ -324,9 +327,9 @@ get_opt_flags(char *s, int *opt_flags)
 		s = NULL;
 
 	*opt_flags = 0;
-	optind = 0;		/* reset getopt */
+	reset_getopt();
 	opterr = 0;		/* suppress error messages */
-	while ((opt = getopt(argc, argv, "fhqtv")) != -1) {
+	while ((opt = getopt(argc, argv, "fhLqtv")) != -1) {
 		switch (opt) {
 		case 'f':
 			*opt_flags |= OPT_NOFOOTER;
@@ -354,34 +357,46 @@ get_opt_flags(char *s, int *opt_flags)
 	return 1;
 }
 
+static int
+get_default_instance_port(const char hostname[])
+{
+	char ip[24] = {'\0'};
+	
+	tds_lookup_host(hostname, ip);
+	
+	if (!*ip) 
+		return 0;
+	
+	return tds7_get_instance_port(ip, "MSSQLSERVER");
+}
+
+#if !defined(LC_ALL)
+# define LC_ALL 0
+#endif
+
+#ifdef HAVE_SSPI
+const char have_sspi[] = "yes";
+#else 
+const char have_sspi[] = "no";
+#endif
+#ifdef ENABLE_KRB5
+const char enable_krb5[] = "yes";
+#else 
+const char enable_krb5[] = "no";
+#endif
+
 static void
 populate_login(TDSLOGIN * login, int argc, char **argv)
 {
 	const TDS_COMPILETIME_SETTINGS *settings;
-	char *hostname = NULL;
-	char *servername = NULL;
-	char *username = NULL;
-	char *password = NULL;
+	char *hostname = NULL, *servername = NULL;
+	char *username = NULL, *password = NULL;
 	char *confile = NULL;
-	int port = 0;
-	int opt;
-	const char *locale = NULL;
+	int opt, port=0, use_domain_login=0;
 	const char *charset = NULL;
 	char *opt_flags_str = NULL;
 
-	setlocale(LC_ALL, "");
-	locale = setlocale(LC_ALL, NULL);
-
-#if HAVE_LOCALE_CHARSET
-	charset = locale_charset();
-#endif
-#if HAVE_NL_LANGINFO && defined(CODESET)
-	if (!charset)
-		charset = nl_langinfo(CODESET);
-#endif
-
-
-	while ((opt = getopt(argc, argv, "H:S:I:P:U:p:Co:t:r:D:")) != -1) {
+	while ((opt = getopt(argc, argv, "H:S:I:J:P:U:p:Co:t:r:D:Lv")) != -1) {
 		switch (opt) {
 		case 't':
 			opt_col_term = strdup(optarg);
@@ -396,31 +411,41 @@ populate_login(TDSLOGIN * login, int argc, char **argv)
 			opt_flags_str = optarg;
 			break;
 		case 'H':
-			hostname = (char *) malloc(strlen(optarg) + 1);
-			strcpy(hostname, optarg);
+			free(hostname);
+			hostname = strdup(optarg);
 			break;
 		case 'S':
-			servername = (char *) malloc(strlen(optarg) + 1);
-			strcpy(servername, optarg);
+			free(servername);
+			servername = strdup(optarg);
 			break;
 		case 'U':
-			username = (char *) malloc(strlen(optarg) + 1);
-			strcpy(username, optarg);
+			free(username);
+			username = strdup(optarg);
 			break;
 		case 'P':
-			password = (char *) malloc(strlen(optarg) + 1);
-			strcpy(password, optarg);
+			free(password);
+			password = strdup(optarg);
+			memset(optarg, 0, strlen(optarg));
 			break;
 		case 'I':
-			confile = (char *) malloc(strlen(optarg) + 1);
-			strcpy(confile, optarg);
+			free(confile);
+			confile = strdup(optarg);
+			break;
+		case 'J':
+			charset = strdup(optarg);
 			break;
 		case 'p':
 			port = atoi(optarg);
 			break;
+		case 'L':
+			global_opt_flags |= OPT_INSTANCES;
+			break;
+		case 'v':
+			global_opt_flags |= OPT_VERBOSE;
+			break;
 		case 'C':
 			settings = tds_get_compiletime_settings();
-			printf("%s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n",
+			printf("%s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n%35s: %s\n",
 			       "Compile-time settings (established with the \"configure\" script)",
 			       "Version", settings->freetds_version,
 			       "freetds.conf directory", settings->sysconfdir, 
@@ -432,11 +457,13 @@ populate_login(TDSLOGIN * login, int argc, char **argv)
 			       "iconv library", settings->libiconv ? "yes" : "no",
 			       "TDS version", settings->tdsver,
 			       "iODBC", settings->iodbc ? "yes" : "no", 
-			       "unixodbc", settings->unixodbc ? "yes" : "no");
+			       "unixodbc", settings->unixodbc ? "yes" : "no", 
+			       "SSPI \"trusted\" logins", have_sspi, 
+			       "Kerberos", enable_krb5);
 			exit(0);
 			break;
 		default:
-			tsql_print_usage(argv[0]);
+			fprintf(stderr, "%s: error: invalid option %c\n", argv[0], (char)opt);
 			exit(1);
 			break;
 		}
@@ -452,48 +479,65 @@ populate_login(TDSLOGIN * login, int argc, char **argv)
 		}
 	}
 
+	if ((global_opt_flags & OPT_INSTANCES) && hostname) {
+		static const char template[] = "%s.instances";
+		char ip[24] = {'\0'};
+		char *filename = getenv("TDSDUMP");
 
-	if (locale)
-		if (!QUIET) printf("locale is \"%s\"\n", locale);
-	if (charset) {
-		if (!QUIET) printf("locale charset is \"%s\"\n", charset);
-	} else {
-		charset = "ISO-8859-1";
-		if (!QUIET) printf("using default charset \"%s\"\n", charset);
+		if (filename) {
+			if ((filename = malloc(sizeof(template) + strlen(filename))) == NULL) 
+				exit(1);
+			sprintf(filename, template, getenv("TDSDUMP"));
+			tdsdump_open(filename);
+			free(filename);
+		}
+		tds_lookup_host(hostname, ip);
+		tds7_get_instance_ports(stderr, ip);
+		tdsdump_close();
+		exit(0);
 	}
 
 	/* validate parameters */
 	if (!servername && !hostname) {
-		fprintf(stderr, "Missing argument -S or -H\n");
-		tsql_print_usage(argv[0]);
+		fprintf(stderr, "%s: error: Missing argument -S or -H\n", argv[0]);
 		exit(1);
 	}
 	if (hostname && !port) {
-		fprintf(stderr, "Missing argument -p \n");
-		tsql_print_usage(argv[0]);
-		exit(1);
+		/*
+		 * TODO: It would be convenient to have a function that looks up a reasonable port based on:
+		 * 	- TDSPORT environment variable
+		 * 	- config files
+		 * 	- get_default_instance_port
+		 *	- TDS version
+		 *	in that order. 
+		 */
+		if (!QUIET) {
+			printf("Missing argument -p, looking for default instance ... ");
+		}
+		if (0 == (port = get_default_instance_port(hostname))) {
+			fprintf(stderr, "%s: no default port provided by host %s\n", argv[0], hostname);
+			exit(1);
+		} 
+		if (!QUIET)
+			printf("found default instance, port %d\n", port);
+		
 	}
+	/* A NULL username indicates a domain (trusted) login */
 	if (!username) {
-		fprintf(stderr, "Missing argument -U \n");
-		tsql_print_usage(argv[0]);
-		exit(1);
-	}
-	if (!servername && !hostname) {
-		tsql_print_usage(argv[0]);
-		exit(1);
+		username = calloc(1, 1);
+		use_domain_login = 1;
 	}
 	if (!password) {
-		password = (char*) malloc(128);
-		readpassphrase("Password: ", password, 128, RPP_ECHO_OFF);
+		password = calloc(1, 128);
+		if (!use_domain_login)
+			readpassphrase("Password: ", password, 128, RPP_ECHO_OFF);
 	}
 	if (!opt_col_term) {
-		fprintf(stderr, "Missing delimiter for -t (check escaping)\n");
-		tsql_print_usage(argv[0]);
+		fprintf(stderr, "%s: missing delimiter for -t (check escaping)\n", argv[0]);
 		exit(1);
 	}
 	if (!opt_row_term) {
-		fprintf(stderr, "Missing delimiter for -r (check escaping)\n");
-		tsql_print_usage(argv[0]);
+		fprintf(stderr, "%s: missing delimiter for -r (check escaping)\n", argv[0]);
 		exit(1);
 	}
 
@@ -505,7 +549,7 @@ populate_login(TDSLOGIN * login, int argc, char **argv)
 		tds_set_app(login, "TSQL");
 		tds_set_library(login, "TDS-Library");
 		tds_set_server(login, servername);
-		tds_set_client_charset(login, charset);
+		if (charset) tds_set_client_charset(login, charset);
 		tds_set_language(login, "us_english");
 		tds_set_passwd(login, password);
 		if (confile) {
@@ -518,12 +562,15 @@ populate_login(TDSLOGIN * login, int argc, char **argv)
 		tds_set_library(login, "TDS-Library");
 		tds_set_server(login, hostname);
 		tds_set_port(login, port);
-		tds_set_client_charset(login, charset);
+		if (charset) tds_set_client_charset(login, charset);
 		tds_set_language(login, "us_english");
 		tds_set_passwd(login, password);
 	}
 
+	memset(password, 0, strlen(password));
+
 	/* free up all the memory */
+	free(confile);
 	free(hostname);
 	free(username);
 	free(password);
@@ -540,15 +587,30 @@ tsql_handle_message(const TDSCONTEXT * context, TDSSOCKET * tds, TDSMESSAGE * ms
 
 	if (msg->msgno != 5701 && msg->msgno != 5703
 	    && msg->msgno != 20018) {
-		fprintf(stderr, "Msg %d, Level %d, State %d, Server %s, Line %d\n%s\n",
-			msg->msgno, msg->severity, msg->state, msg->server, msg->line_number, msg->message);
+		fprintf(stderr, "Msg %d (severity %d, state %d) from %s", 
+			msg->msgno, msg->severity, msg->state, msg->server);
+		if (msg->proc_name && strlen(msg->proc_name))
+			fprintf(stderr, ", Procedure %s", msg->proc_name);
+		if (msg->line_number > 0)
+			fprintf(stderr, " Line %d", msg->line_number);
+		fprintf(stderr, ":\n\t\"%s\"\n", msg->message);
 	}
 
+	return 0;
+}
+
+static int	/* error from library, not message from server */
+tsql_handle_error(const TDSCONTEXT * context, TDSSOCKET * tds, TDSMESSAGE * msg)
+{
+	fprintf(stderr, "Error %d (severity %d):\n\t%s\n", msg->msgno, msg->severity, msg->message);
+	if (0 != msg->oserr) {
+		fprintf(stderr, "\tOS error %d, \"%s\"\n", msg->oserr, strerror(msg->oserr));
+	}
 	return TDS_INT_CANCEL;
 }
 
 static void
-slurp_input_file(char *fname, char **mybuf, int *bufsz, size_t *buflen, int *line)
+slurp_input_file(char *fname, char **mybuf, size_t *bufsz, size_t *buflen, int *line)
 {
 	FILE *fp = NULL;
 	register char *n;
@@ -572,9 +634,18 @@ slurp_input_file(char *fname, char **mybuf, int *bufsz, size_t *buflen, int *lin
 		tsql_add_history(s);
 		(*line)++;
 	}
+	fclose(fp);
 }
 
-extern const char STD_DATETIME_FMT[];
+static void
+print_instance_data(TDSCONNECTION *connection) 
+{
+	if (!connection)
+		return;
+	
+	if (!tds_dstr_isempty(&connection->instance_name))
+		printf("connecting to instance %s on port %d\n", tds_dstr_cstr(&connection->instance_name), connection->port);
+}
 
 int
 main(int argc, char **argv)
@@ -583,7 +654,7 @@ main(int argc, char **argv)
 	char prompt[20];
 	int line = 0;
 	char *mybuf;
-	int bufsz = 4096;
+	size_t bufsz = 4096;
 	size_t buflen = 0;
 	TDSSOCKET *tds;
 	TDSLOGIN *login;
@@ -594,6 +665,8 @@ main(int argc, char **argv)
 	pid_t timer_pid = 0;
 	int pipes[2];
 #endif
+	const char *locale = NULL;
+	const char *charset = NULL;
 
 	istty = isatty(0);
 
@@ -601,6 +674,8 @@ main(int argc, char **argv)
 		fprintf(stderr, "Unable to initialize sockets\n");
 		return 1;
 	}
+
+	setlocale(LC_ALL, "");
 
 	/* grab a login structure */
 	login = tds_alloc_login();
@@ -612,15 +687,41 @@ main(int argc, char **argv)
 	}
 
 	context->msg_handler = tsql_handle_message;
-	context->err_handler = tsql_handle_message;
+	context->err_handler = tsql_handle_error;
 
 	/* process all the command line args into the login structure */
 	populate_login(login, argc, argv);
 
 	/* Try to open a connection */
 	tds = tds_alloc_socket(context, 512);
+	assert(tds);
 	tds_set_parent(tds, NULL);
-	connection = tds_read_config_info(NULL, login, context->locale);
+	connection = tds_read_config_info(tds, login, context->locale);
+
+	locale = setlocale(LC_ALL, NULL);
+
+#if HAVE_LOCALE_CHARSET
+	charset = locale_charset();
+#endif
+#if HAVE_NL_LANGINFO && defined(CODESET)
+	if (!charset)
+		charset = nl_langinfo(CODESET);
+#endif
+
+	if (locale)
+		if (!QUIET) printf("locale is \"%s\"\n", locale);
+	if (charset) {
+		if (!QUIET) printf("locale charset is \"%s\"\n", charset);
+	}
+	
+	if (tds_dstr_isempty(&connection->client_charset)) {
+		if (!charset)
+			charset = "ISO-8859-1";
+
+		tds_set_client_charset(login, charset);
+		tds_dstr_dup(&connection->client_charset, &login->client_charset);
+	}
+	if (!QUIET) printf("using default charset \"%s\"\n", tds_dstr_cstr(&connection->client_charset));
 
 	if (opt_default_db) {
 		tds_dstr_copy(&connection->database, opt_default_db);
@@ -629,14 +730,13 @@ main(int argc, char **argv)
 
 	/* 
 	 * If we're able to establish an ip address for the server, we'll try to connect to it. 
-	 * If that machine is currently unreachable
-	 * show a timer connecting to the server 
+	 * If that machine is currently unreachable, show a timer connecting to the server. 
 	 */
 #if HAVE_FORK
 	if (connection && !QUIET) {
 		/*
-		 * Here we use a pipe so if even main program core the counter stops
-		 * Note that we do not read or write nothing from this pipe
+		 * We use a pipe so that the child is killed even main program aborts. 
+		 * Note that we do not read or write from this pipe. 
 		 */
 		if (pipe(pipes) < 0) {
 			perror("tsql: pipe");
@@ -668,18 +768,21 @@ main(int argc, char **argv)
 		close(pipes[0]);
 	}
 #endif
-	if (!connection || tds_connect(tds, connection) == TDS_FAIL) {
-		tds_free_connection(connection);
+	if (!connection || tds_connect_and_login(tds, connection) != TDS_SUCCEED) {
+		if( VERBOSE ) 
+			print_instance_data(connection);
 		tds_free_socket(tds);
 		tds_free_login(login);
 		tds_free_context(context);
 		fprintf(stderr, "There was a problem connecting to the server\n");
 		exit(1);
 	}
+	if (VERBOSE) 
+		print_instance_data(connection);
 	tds_free_connection(connection);
 	/* give the buffer an initial size */
 	bufsz = 4096;
-	mybuf = (char *) malloc(bufsz);
+	mybuf = malloc(bufsz);
 	mybuf[0] = '\0';
 	buflen = 0;
 
@@ -709,7 +812,7 @@ main(int argc, char **argv)
 		 *  The rest of the line may include options that apply to the batch, 
 		 *  and perhaps whitespace.  
 		 */
-		if (0 == strncasecmp(s, "go", 2) && (strlen(s) == 2 || isspace(s[2]))) {
+		if (0 == strncasecmp(s, "go", 2) && (strlen(s) == 2 || TDS_ISSPACE(s[2]))) {
 			char *go_line = strdup(s);
 			assert(go_line);
 			line = 0;

@@ -1,6 +1,6 @@
 /* FreeTDS - Library of routines accessing Sybase and Microsoft databases
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005  Brian Bruns
- * Copyright (C) 2005, 2006, 2007  Frediano Ziglio
+ * Copyright (C) 2005-2011  Frediano Ziglio
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -38,11 +38,14 @@
 #include "tdsiconv.h"
 #include "tds_checks.h"
 #include "replacements.h"
+
 #ifdef DMALLOC
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: token.c,v 1.343.2.1 2008/01/27 10:41:23 freddy77 Exp $");
+TDS_RCSID(var, "$Id: token.c,v 1.396.2.3 2011/05/10 13:21:30 freddy77 Exp $");
+
+#define USE_ICONV tds->use_iconv
 
 static int tds_process_msg(TDSSOCKET * tds, int marker);
 static int tds_process_compute_result(TDSSOCKET * tds);
@@ -72,12 +75,23 @@ static int tds_process_end(TDSSOCKET * tds, int marker, /*@out@*/ int *flags_par
 
 static int tds_get_data(TDSSOCKET * tds, TDSCOLUMN * curcol);
 static int tds_get_data_info(TDSSOCKET * tds, TDSCOLUMN * curcol, int is_param);
-static /*@observer@*/ const char *_tds_token_name(unsigned char marker);
-static void adjust_character_column_size(const TDSSOCKET * tds, TDSCOLUMN * curcol);
+static /*@observer@*/ const char *tds_token_name(unsigned char marker);
+static void adjust_character_column_size(TDSSOCKET * tds, TDSCOLUMN * curcol);
 static int determine_adjusted_size(const TDSICONV * char_conv, int size);
 static /*@observer@*/ const char *tds_pr_op(int op);
 static int tds_alloc_get_string(TDSSOCKET * tds, /*@special@*/ char **string, int len) /*allocates *string*/;
 
+#if ENABLE_EXTRA_CHECKS
+
+#if defined(__GNUC__) && __GNUC__ >= 2
+#define COMPILE_CHECK(name,check) \
+    extern int name[(check)?1:-1] __attribute__ ((unused))
+#else
+#define COMPILE_CHECK(name,check) \
+    extern int name[(check)?1:-1]
+#endif
+
+#endif
 
 /**
  * \ingroup libtds
@@ -105,7 +119,7 @@ tds_process_default_tokens(TDSSOCKET * tds, int marker)
 
 	CHECK_TDS_EXTRA(tds);
 
-	tdsdump_log(TDS_DBG_FUNC, "tds_process_default_tokens() marker is %x(%s)\n", marker, _tds_token_name(marker));
+	tdsdump_log(TDS_DBG_FUNC, "tds_process_default_tokens() marker is %x(%s)\n", marker, tds_token_name(marker));
 
 	if (IS_TDSDEAD(tds)) {
 		tdsdump_log(TDS_DBG_FUNC, "leaving tds_process_default_tokens() connection dead\n");
@@ -220,7 +234,7 @@ tds_process_default_tokens(TDSSOCKET * tds, int marker)
 	case TDS_LOGINACK_TOKEN:
 	case TDS_ORDERBY_TOKEN:
 	case TDS_CONTROL_TOKEN:
-		tdsdump_log(TDS_DBG_WARN, "Eating %s token\n", _tds_token_name(marker));
+		tdsdump_log(TDS_DBG_WARN, "Eating %s token\n", tds_token_name(marker));
 		tds_get_n(tds, NULL, tds_get_smallint(tds));
 		break;
 	case TDS_TABNAME_TOKEN:	/* used for FOR BROWSE query */
@@ -230,10 +244,13 @@ tds_process_default_tokens(TDSSOCKET * tds, int marker)
 		return tds_process_colinfo(tds, NULL, 0);
 		break;
 	case TDS_ORDERBY2_TOKEN:
-		tdsdump_log(TDS_DBG_WARN, "Eating %s token\n", _tds_token_name(marker));
+		tdsdump_log(TDS_DBG_WARN, "Eating %s token\n", tds_token_name(marker));
 		tds_get_n(tds, NULL, tds_get_int(tds));
 		break;
-	default: /* SYBEBTOK */
+	case TDS_NBC_ROW_TOKEN:
+		tdsdump_log(TDS_DBG_ERROR, "error: cannot process TDS_NBC_ROW_TOKEN %d(%x)!\n", marker, (unsigned char) marker);
+		/* fall out */
+	default: 
 		tds_close_socket(tds);
 		tdserror(tds->tds_ctx, tds, TDSEBTOK, 0);
 		tdsdump_log(TDS_DBG_ERROR, "Unknown marker: %d(%x)!!\n", marker, (unsigned char) marker);
@@ -303,7 +320,6 @@ tds_process_login_tokens(TDSSOCKET * tds)
 	int marker;
 	int len;
 	int memrc = 0;
-	unsigned char major_ver, minor_ver;
 	unsigned char ack;
 	TDS_UINT product_version;
 
@@ -312,57 +328,83 @@ tds_process_login_tokens(TDSSOCKET * tds)
 	tdsdump_log(TDS_DBG_FUNC, "tds_process_login_tokens()\n");
 	/* get_incoming(tds->s); */
 	do {
+		struct 	{ unsigned char major, minor, tiny[2]; 
+			  unsigned int reported; 
+			  char *name;
+			} ver;
+		
 		marker = tds_get_byte(tds);
-		tdsdump_log(TDS_DBG_FUNC, "looking for login token, got  %x(%s)\n", marker, _tds_token_name(marker));
+		tdsdump_log(TDS_DBG_FUNC, "looking for login token, got  %x(%s)\n", marker, tds_token_name(marker));
 
 		switch (marker) {
-		case TDS_AUTH_TOKEN:
-			tds_process_auth(tds);
-			break;
 		case TDS_LOGINACK_TOKEN:
 			/* TODO function */
+			tds->tds71rev1 = 0;
 			len = tds_get_smallint(tds);
 			ack = tds_get_byte(tds);
-			major_ver = tds_get_byte(tds);
-			minor_ver = tds_get_byte(tds);
-			tds_get_n(tds, NULL, 2);
-			/* ignore product name length, see below */
+			
+			ver.major = tds_get_byte(tds);
+			ver.minor = tds_get_byte(tds);
+			ver.tiny[0] = tds_get_byte(tds);
+			ver.tiny[1] = tds_get_byte(tds);
+			ver.reported = (ver.major << 24) | (ver.minor << 16) | (ver.tiny[0] << 8) | ver.tiny[1];
+
+			if (ver.reported == 0x07010000)
+				tds->tds71rev1 = 1;
+
+			/* Log reported server product name, cf. MS-TDS LOGINACK documentation. */
+			switch(ver.reported) {
+			case 0x07000000: 
+				ver.name = "7.0"; break;
+			case 0x07010000: 
+				ver.name = "2000"; break;
+			case 0x71000001: 
+				ver.name = "2000 SP1"; break;
+			case 0x72090002: 
+				ver.name = "2005"; break;
+			case 0x730A0003: 
+				ver.name = "2008 (no NBCROW or fSparseColumnSet)"; break;
+			case 0x730B0003: 
+				ver.name = "2008"; break;
+			default:
+				ver.name = "unknown"; break;
+			}
+			
+			tdsdump_log(TDS_DBG_FUNC, "server reports TDS version %x.%x.%x.%x\n", 
+							ver.major, ver.minor, ver.tiny[0], ver.tiny[1]);
+			tdsdump_log(TDS_DBG_FUNC, "Product name for 0x%x is %s\n", ver.reported, ver.name);
+			
+			/* Get server product name. */
+			/* Ignore product name length; some servers seem to set it incorrectly.  */
 			tds_get_byte(tds);
 			product_version = 0;
-			/* get server product name */
-			/* compute length from packet, some version seem to fill this information wrongly */
+			/* Compute product name length from packet length. */
 			len -= 10;
 			free(tds->product_name);
-			if (major_ver >= 7u) {
+			if (ver.major >= 7u) {
 				product_version = 0x80000000u;
 				memrc += tds_alloc_get_string(tds, &tds->product_name, len / 2);
-			} else if (major_ver >= 5) {
+			} else if (ver.major >= 5) {
 				memrc += tds_alloc_get_string(tds, &tds->product_name, len);
 			} else {
 				memrc += tds_alloc_get_string(tds, &tds->product_name, len);
 				if (tds->product_name != NULL && strstr(tds->product_name, "Microsoft") != NULL)
 					product_version = 0x80000000u;
 			}
+			
 			product_version |= ((TDS_UINT) tds_get_byte(tds)) << 24;
 			product_version |= ((TDS_UINT) tds_get_byte(tds)) << 16;
 			product_version |= ((TDS_UINT) tds_get_byte(tds)) << 8;
 			product_version |= tds_get_byte(tds);
+
 			/*
 			 * MSSQL 6.5 and 7.0 seem to return strange values for this
 			 * using TDS 4.2, something like 5F 06 32 FF for 6.50
 			 */
-			if (major_ver == 4 && minor_ver == 2 && (product_version & 0xff0000ffu) == 0x5f0000ffu)
+			if (ver.major == 4 && ver.minor == 2 && (product_version & 0xff0000ffu) == 0x5f0000ffu)
 				product_version = ((product_version & 0xffff00u) | 0x800000u) << 8;
 			tds->product_version = product_version;
-#ifdef WORDS_BIGENDIAN
-			/* TODO do a best check */
-/*
-				
-				if (major_ver==7) {
-					tds->broken_dates=1;
-				}
-*/
-#endif
+
 			/*
 			 * TDS 5.0 reports 5 on success 6 on failure
 			 * TDS 4.2 reports 1 on success and is not
@@ -390,9 +432,12 @@ tds_process_login_tokens(TDSSOCKET * tds)
 			succeed = TDS_FAIL;
 		}
 	}
-	tdsdump_log(TDS_DBG_FUNC, "leaving tds_process_login_tokens() returning %d\n", succeed);
 	if (memrc != 0)
 		succeed = TDS_FAIL;
+		
+	tdsdump_log(TDS_DBG_FUNC, "tds_process_login_tokens() returning %s\n", 
+					(succeed == TDS_SUCCEED)? "TDS_SUCCEED" : "TDS_FAIL");
+
 	return succeed;
 }
 
@@ -507,7 +552,7 @@ tds_process_tokens(TDSSOCKET *tds, TDS_INT *result_type, int *done_flags, unsign
 	for (;;) {
 
 		marker = tds_get_byte(tds);
-		tdsdump_log(TDS_DBG_INFO1, "processing result tokens.  marker is  %x(%s)\n", marker, _tds_token_name(marker));
+		tdsdump_log(TDS_DBG_INFO1, "processing result tokens.  marker is  %x(%s)\n", marker, tds_token_name(marker));
 
 		switch (marker) {
 		case TDS7_RESULT_TOKEN:
@@ -581,7 +626,7 @@ tds_process_tokens(TDSSOCKET *tds, TDS_INT *result_type, int *done_flags, unsign
 						cursor->srv_status &= ~(TDS_CUR_ISTAT_CLOSED|TDS_CUR_ISTAT_OPEN|TDS_CUR_ISTAT_DEALLOC);
 						cursor->srv_status |= cursor->cursor_id ? TDS_CUR_ISTAT_OPEN : TDS_CUR_ISTAT_CLOSED|TDS_CUR_ISTAT_DEALLOC;
 					}
-					if (tds->internal_sp_called == TDS_SP_PREPARE 
+					if ((tds->internal_sp_called == TDS_SP_PREPARE || tds->internal_sp_called == TDS_SP_PREPEXEC)
 					    && tds->cur_dyn && tds->cur_dyn->num_id == 0 && curcol->column_cur_size > 0) {
 						tds->cur_dyn->num_id = *(TDS_INT *) curcol->column_data;
 					}
@@ -696,6 +741,7 @@ tds_process_tokens(TDSSOCKET *tds, TDS_INT *result_type, int *done_flags, unsign
 			switch (tds->internal_sp_called) {
 			case 0: 
 			case TDS_SP_PREPARE: 
+			case TDS_SP_PREPEXEC:
 			case TDS_SP_EXECUTE: 
 			case TDS_SP_UNPREPARE: 
 			case TDS_SP_EXECUTESQL:
@@ -882,6 +928,8 @@ tds_read_namelist(TDSSOCKET * tds, int remainder, struct namelist **p_head, int 
 		}
 
 		remainder -= namelen;
+		if (IS_TDS7_PLUS(tds))
+			remainder -= namelen;
 		num_names++;
 	}
 
@@ -923,7 +971,7 @@ tds_process_col_name(TDSSOCKET * tds)
 		for (col = 0; col < num_names; ++col) {
 			curcol = info->columns[col];
 			tds_strlcpy(curcol->column_name, cur->name, sizeof(curcol->column_name));
-			curcol->column_namelen = strlen(curcol->column_name);
+			curcol->column_namelen = (TDS_SMALLINT)strlen(curcol->column_name);
 			prev = cur;
 			cur = cur->next;
 			free(prev->name);
@@ -1098,7 +1146,8 @@ tds_process_tabname(TDSSOCKET *tds)
 	hdrsize = tds_get_smallint(tds);
 
 	/* different structure for tds8 */
-	if (IS_TDS8_PLUS(tds))
+	/* hdrsize check is required for tds7.1 revision 1 (mssql without SPs) */
+	if (IS_TDS71_PLUS(tds) && (!IS_TDS71(tds) || !tds->tds71rev1))
 		num_names = tds8_read_table_names(tds, hdrsize, &head);
 	else
 		num_names = tds_read_namelist(tds, hdrsize, &head, 1);
@@ -1157,7 +1206,7 @@ tds_process_colinfo(TDSSOCKET * tds, char **names, int num_names)
 
 			if (names && col_info[1] > 0 && col_info[1] <= num_names) {
 				tds_strlcpy(curcol->table_name, names[col_info[1] - 1], sizeof(curcol->table_name));
-				curcol->table_namelen = strlen(curcol->table_name);
+				curcol->table_namelen = (TDS_SMALLINT)strlen(curcol->table_name);
 			}
 		}
 		/* read real column name */
@@ -1223,6 +1272,7 @@ tds_process_param_result(TDSSOCKET * tds, TDSPARAMINFO ** pinfo)
 		return TDS_FAIL;
 
 	token = tds_get_data(tds, curparam);
+	tdsdump_col(curparam);
 
 	/*
 	 * Real output parameters will either be unnamed or will have a valid
@@ -1350,7 +1400,7 @@ tds_process_compute_result(TDSSOCKET * tds)
 
 		if (curcol->column_namelen == 0) {
 			strcpy(curcol->column_name, tds_pr_op(curcol->column_operator));
-			curcol->column_namelen = strlen(curcol->column_name);
+			curcol->column_namelen = (TDS_SMALLINT)strlen(curcol->column_name);
 		}
 
 		/*  User defined data type of the column */
@@ -1358,19 +1408,8 @@ tds_process_compute_result(TDSSOCKET * tds)
 
 		tds_set_column_type(tds, curcol, tds_get_byte(tds));
 
-		switch (curcol->column_varint_size) {
-		case 4:
-			curcol->column_size = tds_get_int(tds);
-			break;
-		case 2:
-			curcol->column_size = tds_get_smallint(tds);
-			break;
-		case 1:
-			curcol->column_size = tds_get_byte(tds);
-			break;
-		case 0:
-			break;
-		}
+		tds_data_get_info(tds, curcol);
+
 		tdsdump_log(TDS_DBG_INFO1, "processing result. column_size %d\n", curcol->column_size);
 
 		/* Adjust column size according to client's encoding */
@@ -1388,10 +1427,8 @@ tds_process_compute_result(TDSSOCKET * tds)
 	tdsdump_log(TDS_DBG_INFO1, "processing tds compute result. by_cols = %d\n", by_cols);
 
 	if (by_cols) {
-		if ((info->bycolumns = (TDS_SMALLINT *) malloc(by_cols * sizeof(TDS_SMALLINT))) == NULL)
+		if ((info->bycolumns = (TDS_SMALLINT *) calloc(by_cols, sizeof(TDS_SMALLINT))) == NULL)
 			return TDS_FAIL;
-
-		memset(info->bycolumns, '\0', by_cols * sizeof(TDS_SMALLINT));
 	}
 	info->by_cols = by_cols;
 
@@ -1418,7 +1455,7 @@ tds7_get_data_info(TDSSOCKET * tds, TDSCOLUMN * curcol)
 	CHECK_COLUMN_EXTRA(curcol);
 
 	/*  User defined data type of the column */
-	curcol->column_usertype = IS_TDS90(tds) ? tds_get_int(tds) : tds_get_smallint(tds);
+	curcol->column_usertype = IS_TDS72_PLUS(tds) ? tds_get_int(tds) : tds_get_smallint(tds);
 
 	curcol->column_flags = tds_get_smallint(tds);	/*  Flags */
 
@@ -1430,54 +1467,13 @@ tds7_get_data_info(TDSSOCKET * tds, TDSCOLUMN * curcol)
 
 	curcol->column_timestamp = (curcol->column_type == SYBBINARY && curcol->column_usertype == TDS_UT_TIMESTAMP);
 
-	switch (curcol->column_varint_size) {
-	case 4:
-		curcol->column_size = tds_get_int(tds);
-		break;
-	case 2:
-		curcol->column_size = tds_get_smallint(tds);
-		break;
-	case 1:
-		curcol->column_size = tds_get_byte(tds);
-		break;
-	case 0:
-		break;
-	}
+	tds_data_get_info(tds, curcol);
 
 	/* Adjust column size according to client's encoding */
 	curcol->on_server.column_size = curcol->column_size;
 
-	/* numeric and decimal have extra info */
-	if (is_numeric_type(curcol->column_type)) {
-		curcol->column_prec = tds_get_byte(tds);	/* precision */
-		curcol->column_scale = tds_get_byte(tds);	/* scale */
-		/* FIXME check prec/scale, don't let server crash us */
-	}
-
-	if (IS_TDS8_PLUS(tds) && is_collate_type(curcol->on_server.column_type)) {
-		/* based on true type as sent by server */
-		/*
-		 * first 2 bytes are windows code (such as 0x409 for english)
-		 * other 2 bytes ???
-		 * last bytes is id in syscharsets
-		 */
-		tds_get_n(tds, curcol->column_collation, 5);
-		curcol->char_conv =
-			tds_iconv_from_collate(tds, curcol->column_collation[4],
-					       curcol->column_collation[1] * 256 + curcol->column_collation[0]);
-	}
-
 	/* NOTE adjustements must be done after curcol->char_conv initialization */
 	adjust_character_column_size(tds, curcol);
-
-	if (is_blob_type(curcol->column_type)) {
-		/* discard this additional byte */
-		/* TODO discover its meaning */
-		if (IS_TDS90(tds))
-			tds_get_byte(tds);
-		curcol->table_namelen =
-			tds_get_string(tds, tds_get_smallint(tds), curcol->table_name, sizeof(curcol->table_name) - 1);
-	}
 
 	/*
 	 * under 7.0 lengths are number of characters not
@@ -1513,7 +1509,6 @@ static int
 tds7_process_result(TDSSOCKET * tds)
 {
 	int col, num_cols, result;
-	TDSCOLUMN *curcol;
 	TDSRESULTINFO *info;
 
 	CHECK_TDS_EXTRA(tds);
@@ -1537,6 +1532,7 @@ tds7_process_result(TDSSOCKET * tds)
 		return TDS_FAIL;
 	tds->current_results = info;
 	if (tds->cur_cursor) {
+		tds_free_results(tds->cur_cursor->res_info);
 		tds->cur_cursor->res_info = info;
 		tdsdump_log(TDS_DBG_INFO1, "set current_results to cursor->res_info\n");
 	} else {
@@ -1548,12 +1544,31 @@ tds7_process_result(TDSSOCKET * tds)
 	 * loop through the columns populating COLINFO struct from
 	 * server response
 	 */
+	tdsdump_log(TDS_DBG_INFO1, "setting up %d columns\n", num_cols);
 	for (col = 0; col < num_cols; col++) {
-
-		curcol = info->columns[col];
-
-		tdsdump_log(TDS_DBG_INFO1, "setting up column %d\n", col);
+		TDSCOLUMN *curcol = info->columns[col];
+		
 		tds7_get_data_info(tds, curcol);
+	}
+		
+	if (num_cols > 0) {
+		static char dashes[31] = "------------------------------";
+		tdsdump_log(TDS_DBG_INFO1, " %-20s %-15s %-15s %-7s\n", "name", "size/wsize", "type/wtype", "utype");
+		tdsdump_log(TDS_DBG_INFO1, " %-20s %15s %15s %7s\n", dashes+10, dashes+30-15, dashes+30-15, dashes+30-7);
+	}
+	for (col = 0; col < num_cols; col++) {
+		char name[TDS_SYSNAME_SIZE] = {'\0'};
+		TDSCOLUMN *curcol = info->columns[col];
+
+		if (curcol->column_namelen > 0) {
+			memcpy(name, curcol->column_name, curcol->column_namelen);
+			name[curcol->column_namelen] = '\0';
+		}
+		tdsdump_log(TDS_DBG_INFO1, " %-20s %7d/%-7d %7d/%-7d %7d\n", 
+						name, 
+						curcol->column_size, curcol->on_server.column_size, 
+						curcol->column_type, curcol->on_server.column_type, 
+						curcol->column_usertype);
 	}
 
 	/* all done now allocate a row for tds_process_row to use */
@@ -1573,6 +1588,8 @@ tds_get_data_info(TDSSOCKET * tds, TDSCOLUMN * curcol, int is_param)
 	CHECK_TDS_EXTRA(tds);
 	CHECK_COLUMN_EXTRA(curcol);
 
+	tdsdump_log(TDS_DBG_INFO1, "tds_get_data_info(%p, %p, %d) %s\n", tds, curcol, is_param, is_param? "[for parameter]" : "");
+
 	curcol->column_namelen = tds_get_string(tds, tds_get_byte(tds), curcol->column_name, sizeof(curcol->column_name) - 1);
 	curcol->column_name[curcol->column_namelen] = '\0';
 
@@ -1585,52 +1602,61 @@ tds_get_data_info(TDSSOCKET * tds, TDSCOLUMN * curcol, int is_param)
 		curcol->column_writeable = (curcol->column_flags & 0x10) > 1;
 		curcol->column_nullable = (curcol->column_flags & 0x20) > 1;
 		curcol->column_identity = (curcol->column_flags & 0x40) > 1;
-	}
-	/* TODO what's these bytes ?? */
-	if (IS_TDS90(tds))
-		tds_get_n(tds, NULL, 2);
+#if 0
+		/****************************************
+		 * NumParts=BYTE; (introduced in TDS 7.2) 
+		 * PartName=US_VARCHAR;(introduced in TDS 7.2) 
+		 * TableName=NumParts, {PartName}-; 
+		 * ColName= HYPERLINK \l "B_VARCHAR_Def" B_VARCHAR; 
+		 * ColumnData=UserType, Flags, [TableName], // <Only specified if text, //ntext or image columns are included //in the rowset being described> ColName; 
+		 * NoMetaData='0xFF', '0xFF';
+		 */
+		enum column_flag_bits_according_to_microsoft {
+			  case_sensitive	= 0x0001
+			, nullable		= 0x0002
+			, updateable		= 0x0004
+			, might_be_updateable	= 0x0008
+			, identity		= 0x0010
+			, computed		= 0x0020
+			, us_reserved_odbc	= 0x0040 | 0x0080
+			, is_fixed_len_clr_type = 0x0100
+			, is_hidden_browse_pk	= 0x0200
+			, is_browse_pk		= 0x0400
+			, might_be_nullable	= 0x0800 
+		};
+		/* TODO: implement members in TDSCOLUMN */
+		if (IS_TDS72_PLUS(tds)) {
+			curcol->is_computed = 		(curcol->column_flags & (1 << 4)) > 1;
+			curcol->us_reserved_odbc1 = 	(curcol->column_flags & (1 << 5)) > 1;
+			curcol->us_reserved_odbc2 = 	(curcol->column_flags & (1 << 6)) > 1;
+			curcol->is_fixed_len_clr_type = (curcol->column_flags & (1 << 7)) > 1;
+		}
+#endif 
+	} 
 
+	if (IS_TDS72_PLUS(tds)) {
+		tds_get_n(tds, NULL, 2);
+#if 0
+		/* TODO: implement members in TDSCOLUMN, values untested */
+		curcol->us_reserved1 = (curcol->column_flags & 0x01);
+		curcol->us_reserved2 = (curcol->column_flags & 0x02);
+		curcol->us_reserved3 = (curcol->column_flags & 0x04);
+		curcol->us_reserved4 = (curcol->column_flags & 0x08);
+		curcol->is_hidden = (curcol->column_flags & 0x10);
+		curcol->is_key = (curcol->column_flags & 0x20);
+		curcol->is_nullable_unknown = (curcol->column_flags & 0x40);
+#endif
+	}
+	
 	curcol->column_usertype = tds_get_int(tds);
 	tds_set_column_type(tds, curcol, tds_get_byte(tds));
 
 	tdsdump_log(TDS_DBG_INFO1, "processing result. type = %d(%s), varint_size %d\n",
 		    curcol->column_type, tds_prtype(curcol->column_type), curcol->column_varint_size);
-	switch (curcol->column_varint_size) {
-	case 4:
-		curcol->column_size = tds_get_int(tds);
-		/* Only read table_name for blob columns (eg. not for SYBLONGBINARY) */
-		if (is_blob_type (curcol->column_type)) {
-			curcol->table_namelen =
-				tds_get_string(tds, tds_get_smallint(tds), curcol->table_name, sizeof(curcol->table_name) - 1);
-		}
-		break;
-	case 2:
-		/* assure > 0 */
-		curcol->column_size = tds_get_smallint(tds);
-		break;
-	case 1:
-		curcol->column_size = tds_get_byte(tds);
-		break;
-	case 0:
-		break;
-	}
+
+	tds_data_get_info(tds, curcol);
+
 	tdsdump_log(TDS_DBG_INFO1, "processing result. column_size %d\n", curcol->column_size);
-
-	/* numeric and decimal have extra info */
-	if (is_numeric_type(curcol->column_type)) {
-		curcol->column_prec = tds_get_byte(tds);	/* precision */
-		curcol->column_scale = tds_get_byte(tds);	/* scale */
-		/* FIXME check prec/scale, don't let server crash us */
-	}
-
-	/* read sql collation info */
-	/* TODO: we should use it ! */
-	if (IS_TDS8_PLUS(tds) && is_collate_type(curcol->on_server.column_type)) {
-		tds_get_n(tds, curcol->column_collation, 5);
-		curcol->char_conv =
-			tds_iconv_from_collate(tds, curcol->column_collation[4],
-					       curcol->column_collation[1] * 256 + curcol->column_collation[0]);
-	}
 
 	/* Adjust column size according to client's encoding */
 	curcol->on_server.column_size = curcol->column_size;
@@ -1780,7 +1806,7 @@ tds5_process_result(TDSSOCKET * tds)
 		/* if label is empty, use the table column name */
 		if (!curcol->column_namelen && curcol->table_column_name) {
 			tds_strlcpy(curcol->column_name, curcol->table_column_name, sizeof(curcol->column_name));
-			curcol->column_namelen = strlen(curcol->column_name);
+			curcol->column_namelen = (TDS_SMALLINT)strlen(curcol->column_name);
 		}
 
 		/* flags (4 bytes) */
@@ -1795,37 +1821,7 @@ tds5_process_result(TDSSOCKET * tds)
 
 		tds_set_column_type(tds, curcol, tds_get_byte(tds));
 
-		switch (curcol->column_varint_size) {
-		case 4:
-			if (curcol->column_type == SYBTEXT || curcol->column_type == SYBIMAGE) {
-				curcol->column_size = tds_get_int(tds);
-
-				/* save name */
-				curcol->table_namelen =
-					tds_get_string(tds, tds_get_smallint(tds), curcol->table_name, sizeof(curcol->table_name) - 1);
-			} else
-				tdsdump_log(TDS_DBG_INFO1, "UNHANDLED TYPE %x\n", curcol->column_type);
-			break;
-		case 5:
-			curcol->column_size = tds_get_int(tds);
-			break;
-		case 2:
-			curcol->column_size = tds_get_smallint(tds);
-			break;
-		case 1:
-			curcol->column_size = tds_get_byte(tds);
-			break;
-		case 0:
-			curcol->column_size = tds_get_size_by_type(curcol->column_type);
-			break;
-		}
-
-		/* numeric and decimal have extra info */
-		if (is_numeric_type(curcol->column_type)) {
-			curcol->column_prec = tds_get_byte(tds);	/* precision */
-			curcol->column_scale = tds_get_byte(tds);	/* scale */
-			/* FIXME check prec/scale, don't let server crash us */
-		}
+		tds_data_get_info(tds, curcol);
 
 		/* Adjust column size according to client's encoding */
 		curcol->on_server.column_size = curcol->column_size;
@@ -1894,6 +1890,144 @@ tds_process_compute(TDSSOCKET * tds, TDS_INT * pcomputeid)
 	return TDS_SUCCEED;
 }
 
+static int
+tds9_get_varmax(TDSSOCKET * tds, TDSCOLUMN * curcol)
+{
+	TDS_INT8 len = tds_get_int8(tds);
+	TDS_INT chunk_len;
+	TDS_CHAR **p;
+	size_t offset;
+
+	/* NULL */
+	if (len == -1) {
+		curcol->column_cur_size = -1;
+		return TDS_SUCCEED;
+	}
+
+	curcol->column_cur_size = 0;
+	offset = 0;
+	p = &(((TDSBLOB*) curcol->column_data)->textvalue);
+	for (;;) {
+		TDS_CHAR *tmp;
+
+		chunk_len = tds_get_int(tds);
+		if (chunk_len <= 0) {
+			curcol->column_cur_size = offset;
+			return TDS_SUCCEED;
+		}
+		if (*p == NULL)
+			tmp = (TDS_CHAR*) malloc(chunk_len);
+		else
+			tmp = (TDS_CHAR*) realloc(*p, offset + chunk_len);
+		if (!tmp)
+			return TDS_FAIL;
+		*p = tmp;
+		tds_get_n(tds, *p + offset, chunk_len);
+		offset += chunk_len;
+	}
+	return TDS_SUCCEED;
+}
+
+#if ENABLE_EXTRA_CHECKS
+COMPILE_CHECK(tds_variant_size,  sizeof(((TDSVARIANT*)0)->data) == sizeof(((TDSBLOB*)0)->textvalue));
+COMPILE_CHECK(tds_variant_offset,(TDS_INTPTR)(&((TDSVARIANT*)0)->data) == (TDS_INTPTR)(&((TDSBLOB*)0)->textvalue));
+#endif
+
+static int
+tds7_get_variant(TDSSOCKET * tds, TDSCOLUMN * curcol)
+{
+	int colsize = tds_get_int(tds), varint;
+	TDS_UCHAR type, info_len;
+	TDSVARIANT *v;
+
+	/* NULL */
+	curcol->column_cur_size = -1;
+	if (colsize < 2) {
+		tds_get_n(tds, NULL, colsize);
+		return TDS_SUCCEED;
+	}
+
+	v = (TDSVARIANT*) curcol->column_data;
+	v->type = type = tds_get_byte(tds);
+	info_len = tds_get_byte(tds);
+	colsize -= 2;
+	if (info_len > colsize)
+		goto error_type;
+	if (is_collate_type(type)) {
+		if (sizeof(v->collation) > info_len)
+			goto error_type;
+		tds_get_n(tds, v->collation, sizeof(v->collation));
+		colsize -= sizeof(v->collation);
+		info_len -= sizeof(v->collation);
+		curcol->char_conv = is_unicode_type(type) ? 
+			tds->char_convs[client2ucs2] : tds_iconv_from_collate(tds, v->collation);
+	}
+	/* special case for numeric */
+	if (is_numeric_type(type)) {
+		TDS_NUMERIC *num;
+		if (info_len != 2)
+			goto error_type;
+		if (v->data)
+			TDS_ZERO_FREE(v->data);
+		v->data_len = sizeof(TDS_NUMERIC);
+		num = (TDS_NUMERIC*) calloc(1, sizeof(TDS_NUMERIC));
+		v->data = (TDS_CHAR *) num;
+		num->precision = tds_get_byte(tds);
+		num->scale     = tds_get_byte(tds);
+		colsize -= 2;
+		/* FIXME check prec/scale, don't let server crash us */
+		if (colsize > sizeof(num->array))
+			goto error_type;
+		curcol->column_cur_size = colsize;
+		tds_get_n(tds, num->array, colsize);
+		if (IS_TDS7_PLUS(tds))
+			tds_swap_numeric(num);
+		return TDS_SUCCEED;
+	}
+	varint = (type == SYBUNIQUE) ? 0 : tds_get_varint_size(tds, type);
+	if (varint != info_len)
+		goto error_type;
+	switch (varint) {
+	case 0:
+		v->size = tds_get_size_by_type(type);
+		break;
+	case 1:
+		v->size = tds_get_byte(tds);
+		break;
+	case 2:
+		v->size = tds_get_smallint(tds);
+		break;
+	default:
+		goto error_type;
+	}
+	colsize -= info_len;
+	curcol->column_cur_size = colsize;
+	if (v->data)
+		TDS_ZERO_FREE(v->data);
+	if (colsize) {
+		if (USE_ICONV && curcol->char_conv) {
+			curcol->column_cur_size = determine_adjusted_size(curcol->char_conv, colsize);
+			v->data = (TDS_CHAR*) malloc(curcol->column_cur_size);
+			if (!v->data)
+				return TDS_FAIL;
+			if (tds_get_char_data(tds, (char *) v, colsize, curcol) == TDS_FAIL)
+				return TDS_FAIL;
+			colsize = curcol->column_cur_size;
+			v->type = tds_get_cardinal_type(type, 0);
+		} else {
+			v->data = (TDS_CHAR*) malloc(colsize);
+			if (!v->data)
+				return TDS_FAIL;
+			tds_get_n(tds, v->data, colsize);
+		}
+	}
+	v->data_len = colsize;
+	return TDS_SUCCEED;
+
+error_type:
+	tds_get_n(tds, NULL, colsize);
+	return TDS_FAIL;
+}
 
 /**
  * Read a data from wire
@@ -1923,12 +2057,8 @@ tds_get_data(TDSSOCKET * tds, TDSCOLUMN * curcol)
 		 * len (int32), type (int8), 7 (int8), collation, column size (int16) -- [n]char, [n]varchar, binary, varbinary 
 		 * BLOBS (text/image) not supported
 		 */
-		if (curcol->column_type == SYBVARIANT) {
-			colsize = tds_get_int(tds);
-			tds_get_n(tds, NULL, colsize);
-			curcol->column_cur_size = -1;
-			return TDS_SUCCEED;
-		}
+		if (curcol->column_type == SYBVARIANT)
+			return tds7_get_variant(tds, curcol);
 		
 		/*
 		 * LONGBINARY
@@ -1951,8 +2081,13 @@ tds_get_data(TDSSOCKET * tds, TDSCOLUMN * curcol)
 		}
 		break;
 	case 5:
+		blob = (TDSBLOB *) curcol->column_data;
 		colsize = tds_get_int(tds);
+		if (colsize == 0)
+			colsize = -1;
 		break;
+	case 8:
+		return tds9_get_varmax(tds, curcol);
 	case 2:
 		colsize = tds_get_smallint(tds);
 		break;
@@ -2015,7 +2150,7 @@ tds_get_data(TDSSOCKET * tds, TDSCOLUMN * curcol)
 			tds_swap_numeric(num);
 		}
 		curcol->column_cur_size = colsize;
-	} else if (is_blob_type(curcol->column_type)) {
+	} else if (is_blob_col(curcol)) {
 		TDS_CHAR *p;
 		int new_blob_size;
 		assert(blob == (TDSBLOB *) dest); 	/* cf. column_varint_size case 4, above */
@@ -2026,7 +2161,10 @@ tds_get_data(TDSSOCKET * tds, TDSCOLUMN * curcol)
 		 * Here we allocate memory, if need be.  
 		 */
 		/* TODO this can lead to a big waste of memory */
-		new_blob_size = determine_adjusted_size(curcol->char_conv, colsize);
+		if (USE_ICONV)
+			new_blob_size = determine_adjusted_size(curcol->char_conv, colsize);
+		else
+			new_blob_size = colsize;
 		if (new_blob_size == 0) {
 			curcol->column_cur_size = 0;
 			if (blob->textvalue)
@@ -2050,7 +2188,7 @@ tds_get_data(TDSSOCKET * tds, TDSCOLUMN * curcol)
 		curcol->column_cur_size = new_blob_size;
 		
 		/* read the data */
-		if (is_char_type(curcol->column_type)) {
+		if (USE_ICONV && curcol->char_conv) {
 			if (tds_get_char_data(tds, (char *) blob, colsize, curcol) == TDS_FAIL)
 				return TDS_FAIL;
 		} else {
@@ -2060,7 +2198,7 @@ tds_get_data(TDSSOCKET * tds, TDSCOLUMN * curcol)
 	} else {		/* non-numeric and non-blob */
 		curcol->column_cur_size = colsize;
 
-		if (curcol->char_conv) {
+		if (USE_ICONV && curcol->char_conv) {
 			if (tds_get_char_data(tds, (char *) dest, colsize, curcol) == TDS_FAIL)
 				return TDS_FAIL;
 		} else {	
@@ -2228,8 +2366,8 @@ tds_process_end(TDSSOCKET * tds, int marker, int *flags_parm)
 	 * have no result set.
 	 */
 
-	rows_affected = IS_TDS90(tds) ? tds_get_int8(tds) : tds_get_int(tds);
-	tdsdump_log(TDS_DBG_FUNC, "                rows_affected = %" TDS_I64_FORMAT "\n", rows_affected);
+	rows_affected = IS_TDS72_PLUS(tds) ? tds_get_int8(tds) : tds_get_int(tds);
+	tdsdump_log(TDS_DBG_FUNC, "                rows_affected = %" PRId64 "\n", rows_affected);
 	if (done_count_valid)
 		tds->rows_affected = rows_affected;
 	else
@@ -2311,7 +2449,7 @@ tds_process_env_chg(TDSSOCKET * tds)
 
 	/* discard byte values, not still supported */
 	/* TODO support them */
-	if (IS_TDS8_PLUS(tds) && type > TDS_ENV_PACKSIZE) {
+	if (IS_TDS71_PLUS(tds) && type > TDS_ENV_PACKSIZE) {
 		/* discard new one */
 		tds_get_n(tds, NULL, tds_get_byte(tds));
 		/* discard old one */
@@ -2335,14 +2473,13 @@ tds_process_env_chg(TDSSOCKET * tds)
 	switch (type) {
 	case TDS_ENV_PACKSIZE:
 		new_block_size = atoi(newval);
-		if (new_block_size > tds->env.block_size) {
-			tdsdump_log(TDS_DBG_INFO1, "increasing block size from %s to %d\n", oldval, new_block_size);
+		if (new_block_size >= 512) {
+			tdsdump_log(TDS_DBG_INFO1, "changing block size from %s to %d\n", oldval, new_block_size);
 			/* 
-			 * I'm not aware of any way to shrink the 
-			 * block size but if it is possible, we don't 
-			 * handle it.
+			 * Is possible to have a shrink if server limits packet
+			 * size more than what we specified
 			 */
-			/* Reallocate buffer if impossible (strange values from server or out of memory) use older buffer */
+			/* Reallocate buffer if possible (strange values from server or out of memory) use older buffer */
 			tds_realloc_socket(tds, new_block_size);
 		}
 		break;
@@ -2378,7 +2515,7 @@ tds_process_env_chg(TDSSOCKET * tds)
 /**
  * tds_process_msg() is called for MSG, ERR, or EED tokens and is responsible
  * for calling the CLI's message handling routine
- * returns TDS_SUCCEED if informational, TDS_ERROR if error.
+ * returns TDS_SUCCEED if informational, TDS_FAIL if error.
  */
 static int
 tds_process_msg(TDSSOCKET * tds, int marker)
@@ -2448,7 +2585,7 @@ tds_process_msg(TDSSOCKET * tds, int marker)
 		return TDS_FAIL;
 	}
 
-	tdsdump_log(TDS_DBG_ERROR, "tds_process_msg() reading message from server\n");
+	tdsdump_log(TDS_DBG_ERROR, "tds_process_msg() reading message %d from server\n", msg.msgno);
 	
 	rc = 0;
 	/* the message */
@@ -2457,11 +2594,19 @@ tds_process_msg(TDSSOCKET * tds, int marker)
 	/* server name */
 	rc += tds_alloc_get_string(tds, &msg.server, tds_get_byte(tds));
 
+	if ((!msg.server || !msg.server[0]) && tds->connection) {
+		TDS_ZERO_FREE(msg.server);
+		if (-1 == asprintf(&msg.server, "[%s]", tds_dstr_cstr(&tds->connection->server_name))) {
+			tdsdump_log(TDS_DBG_ERROR, "out of memory (%d), %s\n", errno, strerror(errno));
+			return TDS_FAIL;
+		}
+	}
+
 	/* stored proc name if available */
 	rc += tds_alloc_get_string(tds, &msg.proc_name, tds_get_byte(tds));
 
 	/* line number in the sql statement where the problem occured */
-	msg.line_number = IS_TDS90(tds) ? tds_get_int(tds) : tds_get_smallint(tds);
+	msg.line_number = IS_TDS72_PLUS(tds) ? tds_get_int(tds) : tds_get_smallint(tds);
 
 	/*
 	 * If the server doesen't provide an sqlstate, map one via server native errors
@@ -2482,7 +2627,7 @@ tds_process_msg(TDSSOCKET * tds, int marker)
 			case TDS5_PARAMFMT2_TOKEN:
 			case TDS5_PARAMS_TOKEN:
 				if (tds_process_default_tokens(tds, next_marker) != TDS_SUCCEED)
-					++rc;
+					--rc;
 				continue;
 			}
 			break;
@@ -2498,7 +2643,7 @@ tds_process_msg(TDSSOCKET * tds, int marker)
 
 	if (rc != 0) {
 		tds_free_msg(&msg);
-		return TDS_ERROR;
+		return TDS_FAIL;
 	}
 	
 	/* special case, */
@@ -2601,7 +2746,7 @@ tds_process_cancel(TDSSOCKET * tds)
  * \param id   dynamic id to search
  */
 TDSDYNAMIC *
-tds_lookup_dynamic(TDSSOCKET * tds, char *id)
+tds_lookup_dynamic(TDSSOCKET * tds, const char *id)
 {
 	TDSDYNAMIC *curr;
 
@@ -2744,37 +2889,7 @@ tds5_process_dyn_result2(TDSSOCKET * tds)
 		/* column type */
 		tds_set_column_type(tds, curcol, tds_get_byte(tds));
 
-		/* column size */
-		switch (curcol->column_varint_size) {
-		case 5:
-			curcol->column_size = tds_get_int(tds);
-			break;
-		case 4:
-			if (curcol->column_type == SYBTEXT || curcol->column_type == SYBIMAGE) {
-				curcol->column_size = tds_get_int(tds);
-				/* read table name */
-				curcol->table_namelen =
-					tds_get_string(tds, tds_get_smallint(tds), curcol->table_name,
-						       sizeof(curcol->table_name) - 1);
-			} else
-				tdsdump_log(TDS_DBG_INFO1, "UNHANDLED TYPE %x\n", curcol->column_type);
-			break;
-		case 2:
-			curcol->column_size = tds_get_smallint(tds);
-			break;
-		case 1:
-			curcol->column_size = tds_get_byte(tds);
-			break;
-		case 0:
-			break;
-		}
-
-		/* numeric and decimal have extra info */
-		if (is_numeric_type(curcol->column_type)) {
-			curcol->column_prec = tds_get_byte(tds);	/* precision */
-			curcol->column_scale = tds_get_byte(tds);	/* scale */
-			/* FIXME check prec/scale, don't let server crash us */
-		}
+		tds_data_get_info(tds, curcol);
 
 		/* Adjust column size according to client's encoding */
 		curcol->on_server.column_size = curcol->column_size;
@@ -2816,6 +2931,7 @@ tds_get_token_size(int marker)
 	}
 }
 
+#ifdef WORDS_BIGENDIAN
 void
 tds_swap_datatype(int coltype, unsigned char *buf)
 {
@@ -2848,6 +2964,7 @@ tds_swap_datatype(int coltype, unsigned char *buf)
 		break;
 	}
 }
+#endif
 
 void
 tds_swap_numeric(TDS_NUMERIC *num)
@@ -2905,7 +3022,7 @@ tds_process_compute_names(TDSSOCKET * tds)
 
 			assert(strlen(curcol->column_name) == curcol->column_namelen);
 			tds_strlcpy(curcol->column_name, cur->name, sizeof(curcol->column_name));
-			curcol->column_namelen = strlen(curcol->column_name);
+			curcol->column_namelen = (TDS_SMALLINT)strlen(curcol->column_name);
 
 			next = cur->next;
 			free(cur->name);
@@ -2998,7 +3115,7 @@ tds7_process_compute_result(TDSSOCKET * tds)
 
 		if (!curcol->column_namelen) {
 			strcpy(curcol->column_name, tds_pr_op(curcol->column_operator));
-			curcol->column_namelen = strlen(curcol->column_name);
+			curcol->column_namelen = (TDS_SMALLINT)strlen(curcol->column_name);
 		}
 	}
 
@@ -3078,10 +3195,10 @@ tds5_process_optioncmd(TDSSOCKET * tds)
 		arg = tds_get_int(tds);
 		break;
 	default:
-		tdsdump_log(TDS_DBG_INFO1, "oops: cannot process option of size %d\n", argsize);
-		assert(argsize <= 4);
-		exit(1);	 /* FIXME: stream would become desynchronized */
-		break;
+		tdsdump_log(TDS_DBG_INFO1, "oops: cannot process option %d of size %d\n", option, argsize);
+		/* ignore argument */
+		tds_get_n(tds, NULL, argsize);
+		return TDS_FAIL;
 	}
 	tdsdump_log(TDS_DBG_INFO1, "received option %d value %d\n", option, arg);
 
@@ -3176,7 +3293,7 @@ tds_prtype(int token)
 /** @} */
 
 static const char *
-_tds_token_name(unsigned char marker)
+tds_token_name(unsigned char marker)
 {
 	switch (marker) {
 
@@ -3264,7 +3381,7 @@ _tds_token_name(unsigned char marker)
  * Adjust column size according to client's encoding 
  */
 static void
-adjust_character_column_size(const TDSSOCKET * tds, TDSCOLUMN * curcol)
+adjust_character_column_size(TDSSOCKET * tds, TDSCOLUMN * curcol)
 {
 	CHECK_TDS_EXTRA(tds);
 	CHECK_COLUMN_EXTRA(curcol);
@@ -3272,20 +3389,29 @@ adjust_character_column_size(const TDSSOCKET * tds, TDSCOLUMN * curcol)
 	if (is_unicode_type(curcol->on_server.column_type))
 		curcol->char_conv = tds->char_convs[client2ucs2];
 
-	/* Sybase UNI(VAR)CHAR fields are transmitted via SYBLONGBINARY and in UTF-16*/
+	/* Sybase UNI(VAR)CHAR fields are transmitted via SYBLONGBINARY and in UTF-16 */
 	if (curcol->on_server.column_type == SYBLONGBINARY && (
 		curcol->column_usertype == USER_UNICHAR_TYPE ||
 		curcol->column_usertype == USER_UNIVARCHAR_TYPE)) {
-		/* FIXME ucs2 is not UTF-16... */
-		/* FIXME what happen if client is big endian ?? */
-		curcol->char_conv = tds->char_convs[client2ucs2];
+#ifdef WORDS_BIGENDIAN
+		static const char sybase_utf[] = "UTF-16BE";
+#else
+		static const char sybase_utf[] = "UTF-16LE";
+#endif
+
+		curcol->char_conv = tds_iconv_get(tds, tds->char_convs[client2ucs2]->client_charset.name, sybase_utf);
+
+		/* fallback to UCS-2LE */
+		/* FIXME should be useless. Does not works always */
+		if (!curcol->char_conv)
+			curcol->char_conv = tds->char_convs[client2ucs2];
 	}
 
 	/* FIXME: and sybase ?? */
 	if (!curcol->char_conv && IS_TDS7_PLUS(tds) && is_ascii_type(curcol->on_server.column_type))
 		curcol->char_conv = tds->char_convs[client2server_chardata];
 
-	if (!curcol->char_conv)
+	if (!USE_ICONV || !curcol->char_conv)
 		return;
 
 	curcol->on_server.column_size = curcol->column_size;

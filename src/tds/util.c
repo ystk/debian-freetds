@@ -53,7 +53,7 @@
 #include <unistd.h>
 #endif /* HAVE_UNISTD_H */
 
-#ifdef WIN32
+#ifdef _WIN32
 #include <process.h>
 #endif
 
@@ -65,19 +65,13 @@
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: util.c,v 1.83 2007/12/07 05:27:55 jklowden Exp $");
+TDS_RCSID(var, "$Id: util.c,v 1.93 2010/07/25 08:40:19 freddy77 Exp $");
 
 void
 tds_set_parent(TDSSOCKET * tds, void *the_parent)
 {
 	if (tds)
 		tds->parent = the_parent;
-}
-
-void *
-tds_get_parent(TDSSOCKET * tds)
-{
-	return (tds->parent);
 }
 
 /**
@@ -194,10 +188,10 @@ tds_version(TDSSOCKET * tds_socket, char *pversion_string)
 	int iversion = 0;
 
 	if (tds_socket) {
-		iversion = 10 * tds_socket->major_version + tds_socket->minor_version;
+		iversion = 10 * TDS_MAJOR(tds_socket) + TDS_MINOR(tds_socket);
 
 		if (pversion_string) {
-			sprintf(pversion_string, "%d.%d", tds_socket->major_version, tds_socket->minor_version);
+			sprintf(pversion_string, "%d.%d", TDS_MAJOR(tds_socket), TDS_MINOR(tds_socket));
 		}
 	}
 
@@ -207,7 +201,7 @@ tds_version(TDSSOCKET * tds_socket, char *pversion_string)
 unsigned int
 tds_gettime_ms(void)
 {
-#ifdef WIN32
+#ifdef _WIN32
 	return GetTickCount();
 #elif defined(HAVE_GETHRTIME)
 	return (unsigned int) (gethrtime() / 1000000u);
@@ -239,7 +233,7 @@ tds_gettime_ms(void)
 #define EXFATAL       10
 #define EXCONSISTENCY 11
 
-typedef struct _tds_error_message 
+typedef struct tds_error_message
 {
 	TDSERRNO msgno;
 	int severity;
@@ -255,6 +249,7 @@ static const TDS_ERROR_MESSAGE tds_error_messages[] =
 	, { TDSEICONVI,      EXCONVERSION,	"Some character(s) could not be converted into client's character set.  "
 						"Unconverted bytes were changed to question marks ('?')" }
 	, { TDSEICONV2BIG,   EXCONVERSION,	"Some character(s) could not be converted into client's character set" }
+	, { TDSEPORTINSTANCE,      EXUSER,      "Both port and instance specified" }
 	, { TDSERPND,           EXPROGRAM,	"Attempt to initiate a new Adaptive Server operation with results pending" }
 	, { TDSEBTOK,              EXCOMM,	"Bad token from the server: Datastream processing out of sync" }
 	, { TDSECAP,               EXCOMM,	"DB-Library capabilities not accepted by the Server" }
@@ -268,8 +263,10 @@ static const TDS_ERROR_MESSAGE tds_error_messages[] =
 	, { TDSEREAD,              EXCOMM,	"Read from the server failed" }
 	, { TDSETIME,              EXTIME,	"Adaptive Server connection timed out" }
 	, { TDSESEOF,              EXCOMM,	"Unexpected EOF from the server" }
+	, { TDSEINTF,          	   EXUSER,	"Server name not found in configuration files." }
 	, { TDSESOCK,              EXCOMM,	"Unable to open socket" }
 	, { TDSESYNC,              EXCOMM,	"Read attempted while out of synchronization with Adaptive Server" }
+	, { TDSEUHST,	           EXUSER,	"Unknown host machine name." }
 	, { TDSEUMSG,              EXCOMM,	"Unknown message-id in MSG datastream" }
 	, { TDSEUSCT,              EXCOMM,	"Unable to set communications timer" }
 	, { TDSEUTDS,              EXCOMM,	"Unrecognized TDS version received from the server" }
@@ -361,24 +358,22 @@ tdserror (const TDSCONTEXT * tds_ctx, TDSSOCKET * tds, int msgno, int errnum)
 		 * The client library must return a valid code.  It is not checked again here.
 		 */
 		rc = tds_ctx->err_handler(tds_ctx, tds, &msg);
+	 	tdsdump_log(TDS_DBG_FUNC, "tdserror: client library returned %s(%d)\n", retname(rc), rc);
 
 		TDS_ZERO_FREE(msg.sql_state);
+	} else {
+		const static char msg[] = "tdserror: client library not called because either "
+					  "tds_ctx (%p) or tds_ctx->err_handler is NULL\n";
+	 	tdsdump_log(TDS_DBG_FUNC, msg, tds_ctx);
 	}
 
- 	tdsdump_log(TDS_DBG_FUNC, "tdserror: client library returned %s(%d)\n", retname(rc), rc);
   
-  	assert(!(msgno != TDSETIME && rc == TDS_INT_TIMEOUT));   /* client library should prevent */
-	assert(!(msgno != TDSETIME && rc == TDS_INT_CONTINUE));  /* client library should prevent */
-	
-	if (msgno != TDSETIME) {
-		switch(rc) {
-		case TDS_INT_TIMEOUT:
-		case TDS_INT_CONTINUE:
-		 	tdsdump_log(TDS_DBG_FUNC, "exit: %s(%d) valid only for TDSETIME\n", retname(rc), rc);
-			exit(1);
-		default:
-			break;
-		}
+  	assert(msgno == TDSETIME || rc != TDS_INT_TIMEOUT);   /* client library should prevent */
+	assert(msgno == TDSETIME || rc != TDS_INT_CONTINUE);  /* client library should prevent */
+
+	if (msgno != TDSETIME && rc != TDS_INT_CANCEL) {
+		tdsdump_log(TDS_DBG_SEVERE, "exit: %s(%d) valid only for TDSETIME\n", retname(rc), rc);
+		rc = TDS_INT_CANCEL;
 	}
 
  	if (rc == TDS_INT_TIMEOUT) {

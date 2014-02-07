@@ -63,7 +63,18 @@ ALL :  \
 	"$(OUTDIR)\attributes.exe" \
 	"$(OUTDIR)\hidden.exe" \
 	"$(OUTDIR)\blob1.exe" \
-	"$(OUTDIR)\rowset.exe"
+	"$(OUTDIR)\cancel.exe" \
+	"$(OUTDIR)\wchar.exe" \
+	"$(OUTDIR)\rowset.exe" \
+	"$(OUTDIR)\transaction2.exe" \
+	"$(OUTDIR)\cursor6.exe" \
+	"$(OUTDIR)\cursor7.exe" \
+	"$(OUTDIR)\utf8.exe" \
+	"$(OUTDIR)\utf8_2.exe" \
+	"$(OUTDIR)\stats.exe" \
+	"$(OUTDIR)\descrec.exe" \
+	"$(OUTDIR)\peter.exe" \
+	"$(OUTDIR)\test64.exe"
 
 CLEAN :
 	-@erase "$(INTDIR)*.obj"
@@ -246,8 +257,41 @@ LINK32_FLAGS=kernel32.lib user32.lib gdi32.lib advapi32.lib ws2_32.lib odbc32.li
 "$(OUTDIR)\blob1.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\blob1.obj"
 	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\blob1.obj" /pdb:"$(OUTDIR)\blob1.pdb" /out:"$(OUTDIR)\blob1.exe"
 
+"$(OUTDIR)\cancel.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\cancel.obj"
+	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\cancel.obj" /pdb:"$(OUTDIR)\cancel.pdb" /out:"$(OUTDIR)\cancel.exe"
+
+"$(OUTDIR)\wchar.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\wchar.obj"
+	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\wchar.obj" /pdb:"$(OUTDIR)\wchar.pdb" /out:"$(OUTDIR)\wchar.exe"
+
 "$(OUTDIR)\rowset.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\rowset.obj"
 	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\rowset.obj" /pdb:"$(OUTDIR)\rowset.pdb" /out:"$(OUTDIR)\rowset.exe"
+
+"$(OUTDIR)\transaction2.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\transaction2.obj"
+	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\transaction2.obj" /pdb:"$(OUTDIR)\transaction2.pdb" /out:"$(OUTDIR)\transaction2.exe"
+
+"$(OUTDIR)\cursor6.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\cursor6.obj"
+	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\cursor6.obj" /pdb:"$(OUTDIR)\cursor6.pdb" /out:"$(OUTDIR)\cursor6.exe"
+
+"$(OUTDIR)\cursor7.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\cursor7.obj"
+	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\cursor7.obj" /pdb:"$(OUTDIR)\cursor7.pdb" /out:"$(OUTDIR)\cursor7.exe"
+
+"$(OUTDIR)\utf8.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\utf8.obj"
+	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\utf8.obj" /pdb:"$(OUTDIR)\utf8.pdb" /out:"$(OUTDIR)\utf8.exe"
+
+"$(OUTDIR)\utf8_2.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\utf8_2.obj"
+	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\utf8_2.obj" /pdb:"$(OUTDIR)\utf8_2.pdb" /out:"$(OUTDIR)\utf8_2.exe"
+
+"$(OUTDIR)\stats.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\stats.obj"
+	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\stats.obj" /pdb:"$(OUTDIR)\stats.pdb" /out:"$(OUTDIR)\stats.exe"
+
+"$(OUTDIR)\descrec.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\descrec.obj"
+	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\descrec.obj" /pdb:"$(OUTDIR)\descrec.pdb" /out:"$(OUTDIR)\descrec.exe"
+
+"$(OUTDIR)\peter.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\peter.obj"
+	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\peter.obj" /pdb:"$(OUTDIR)\peter.pdb" /out:"$(OUTDIR)\peter.exe"
+
+"$(OUTDIR)\test64.exe" : "$(OUTDIR)" "$(INTDIR)\common.obj" "$(INTDIR)\test64.obj"
+	$(LINK32) $(LINK32_FLAGS) "$(INTDIR)\common.obj" "$(INTDIR)\test64.obj" /pdb:"$(OUTDIR)\test64.pdb" /out:"$(OUTDIR)\test64.exe"
 
 
 
@@ -307,4 +351,15 @@ CHECK :
 	"$(OUTDIR)\attributes.exe"
 	"$(OUTDIR)\hidden.exe"
 	"$(OUTDIR)\blob1.exe"
+	"$(OUTDIR)\cancel.exe"
+	"$(OUTDIR)\wchar.exe"
 	"$(OUTDIR)\rowset.exe"
+	"$(OUTDIR)\transaction2.exe"
+	"$(OUTDIR)\cursor6.exe"
+	"$(OUTDIR)\cursor7.exe"
+	"$(OUTDIR)\utf8.exe"
+	"$(OUTDIR)\utf8_2.exe"
+	"$(OUTDIR)\stats.exe"
+	"$(OUTDIR)\descrec.exe"
+	"$(OUTDIR)\peter.exe"
+	"$(OUTDIR)\test64.exe"

@@ -3,27 +3,19 @@
 
 /* Test timeout of query */
 
-static char software_version[] = "$Id: timeout.c,v 1.7 2007/11/26 18:12:31 freddy77 Exp $";
+static char software_version[] = "$Id: timeout.c,v 1.13 2010/07/05 09:20:33 freddy77 Exp $";
 static void *no_unused_var_warn[] = { software_version, no_unused_var_warn };
 
 static void
 AutoCommit(int onoff)
 {
-	SQLRETURN ret;
-
-	ret = SQLSetConnectAttr(Connection, SQL_ATTR_AUTOCOMMIT, int2ptr(onoff), 0);
-	if (ret != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Enabling AutoCommit");
+	CHKSetConnectAttr(SQL_ATTR_AUTOCOMMIT, int2ptr(onoff), 0, "S");
 }
 
 static void
 EndTransaction(SQLSMALLINT type)
 {
-	SQLRETURN ret;
-
-	ret = SQLEndTran(SQL_HANDLE_DBC, Connection, type);
-	if (ret != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Can't commit transaction");
+	CHKEndTran(SQL_HANDLE_DBC, odbc_conn, type, "S");
 }
 
 int
@@ -32,68 +24,58 @@ main(int argc, char *argv[])
 	HENV env;
 	HDBC dbc;
 	HSTMT stmt;
-	SQLRETURN ret;
 	SQLINTEGER i;
 
-	Connect();
+	odbc_connect();
 
 	/* here we can't use temporary table cause we use two connection */
-	CommandWithResult(Statement, "drop table test_timeout");
-	Command(Statement, "create table test_timeout(n numeric(18,0) primary key, t varchar(30))");
+	odbc_command_with_result(odbc_stmt, "drop table test_timeout");
+	odbc_command("create table test_timeout(n numeric(18,0) primary key, t varchar(30))");
 	AutoCommit(SQL_AUTOCOMMIT_OFF);
 
-	Command(Statement, "insert into test_timeout(n, t) values(1, 'initial')");
+	odbc_command("insert into test_timeout(n, t) values(1, 'initial')");
 	EndTransaction(SQL_COMMIT);
 
-	Command(Statement, "update test_timeout set t = 'second' where n = 1");
+	odbc_command("update test_timeout set t = 'second' where n = 1");
 
 	/* save this connection and do another */
-	env = Environment;
-	dbc = Connection;
-	stmt = Statement;
-	Environment = SQL_NULL_HENV;
-	Connection = SQL_NULL_HDBC;
-	Statement = SQL_NULL_HSTMT;
+	env = odbc_env;
+	dbc = odbc_conn;
+	stmt = odbc_stmt;
+	odbc_env = SQL_NULL_HENV;
+	odbc_conn = SQL_NULL_HDBC;
+	odbc_stmt = SQL_NULL_HSTMT;
 
-	Connect();
+	odbc_connect();
 
 	AutoCommit(SQL_AUTOCOMMIT_OFF);
-	ret = SQLSetStmtAttr(Statement, SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER) 2, 0);
-	if (ret != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("Error setting timeout");
+	CHKSetStmtAttr(SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER) 2, 0, "S");
 
 	i = 1;
-	ret = SQLBindParameter(Statement, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &i, 0, NULL);
-	if (ret != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("SQLBindParameter failure");
+	CHKBindParameter(1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &i, 0, NULL, "S");
 
-	if (SQLPrepare(Statement, (SQLCHAR *) "update test_timeout set t = 'bad' where n = ?", SQL_NTS) != SQL_SUCCESS)
-		ODBC_REPORT_ERROR("SQLPrepare failure");
-	ret = SQLExecute(Statement);
-	if (ret != SQL_ERROR)
-		ODBC_REPORT_ERROR("SQLExecute success ??");
+	CHKPrepare((SQLCHAR *) "update test_timeout set t = 'bad' where n = ?", SQL_NTS, "S");
+	CHKExecute("E");
 	EndTransaction(SQL_ROLLBACK);
 
 	/* TODO should return error S1T00 Timeout expired, test error message */
-	ret = CommandWithResult(Statement, "update test_timeout set t = 'bad' where n = 1");
-	if (ret != SQL_ERROR)
-		ODBC_REPORT_ERROR("SQLExecDirect success ??");
+	odbc_command2("update test_timeout set t = 'bad' where n = 1", "E");
 
 	EndTransaction(SQL_ROLLBACK);
 
-	Disconnect();
+	odbc_disconnect();
 
-	Environment = env;
-	Connection = dbc;
-	Statement = stmt;
+	odbc_env = env;
+	odbc_conn = dbc;
+	odbc_stmt = stmt;
 
 	EndTransaction(SQL_COMMIT);
 
 	/* Sybase do not accept DROP TABLE during a transaction */
 	AutoCommit(SQL_AUTOCOMMIT_ON);
-	Command(Statement, "drop table test_timeout");
+	odbc_command("drop table test_timeout");
 
-	Disconnect();
+	odbc_disconnect();
 
 	return 0;
 }

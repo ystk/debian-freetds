@@ -29,17 +29,16 @@
 #include <stdlib.h>
 #endif /* HAVE_STDLIB_H */
 
-#include "tds.h"
-#include "sybdb.h"
-#include "syberror.h"
-#include "dblib.h"
-/* #include "fortify.h" */
+#include <tds.h>
+#include <sybdb.h>
+#include <syberror.h>
+#include <dblib.h>
 
 #ifdef DMALLOC
 #include <dmalloc.h>
 #endif
 
-TDS_RCSID(var, "$Id: dbutil.c,v 1.42 2007/12/07 05:27:55 jklowden Exp $");
+TDS_RCSID(var, "$Id: dbutil.c,v 1.47.2.3 2011/06/09 13:02:49 freddy77 Exp $");
 
 /*
  * test include consistency 
@@ -58,7 +57,7 @@ TDS_RCSID(var, "$Id: dbutil.c,v 1.42 2007/12/07 05:27:55 jklowden Exp $");
 /* TODO test SYBxxx consistency */
 
 #define TEST_ATTRIBUTE(t,sa,fa,sb,fb) \
-	COMPILE_CHECK(t,sizeof(((sa*)0)->fa) == sizeof(((sb*)0)->fb) && (int)(&((sa*)0)->fa) == (int)(&((sb*)0)->fb))
+	COMPILE_CHECK(t,sizeof(((sa*)0)->fa) == sizeof(((sb*)0)->fb) && (TDS_INTPTR)(&((sa*)0)->fa) == (TDS_INTPTR)(&((sb*)0)->fb))
 
 TEST_ATTRIBUTE(t21,TDS_MONEY4,mny4,DBMONEY4,mny4);
 TEST_ATTRIBUTE(t22,TDS_OLD_MONEY,mnyhigh,DBMONEY,mnyhigh);
@@ -105,10 +104,10 @@ _dblib_handle_info_message(const TDSCONTEXT * tds_ctx, TDSSOCKET * tds, TDSMESSA
 		 * server messages with severity greater than 10.
 		 */
 		/* Cannot call dbperror() here because server messsage numbers (and text) are not in its lookup table. */
-		static char message[] = "General SQL Server error: Check messages from the SQL Server";
-		(*_dblib_err_handler)(dbproc, msg->severity, msg->msgno, 0, message, NULL);
+		static const char message[] = "General SQL Server error: Check messages from the SQL Server";
+		(*_dblib_err_handler)(dbproc, msg->severity, msg->msgno, DBNOERR, (char *) message, NULL);
 	}
-	return SUCCEED;
+	return TDS_SUCCEED;
 }
 
 /** \internal
@@ -210,7 +209,7 @@ _dblib_check_and_handle_interrupt(void * vdbproc)
 	if (dbproc->chkintr == NULL || dbproc->hndlintr == NULL)
 		return INT_CONTINUE;
 		
-	tdsdump_log(TDS_DBG_FUNC, "tds_int_handler %p [%p, %p]", dbproc, dbproc->chkintr, dbproc->hndlintr);
+	tdsdump_log(TDS_DBG_FUNC, "_dblib_check_and_handle_interrupt %p [%p, %p]\n", dbproc, dbproc->chkintr, dbproc->hndlintr);
 
 	if (dbproc->chkintr(dbproc)){
 		switch (ret = dbproc->hndlintr(dbproc)) {

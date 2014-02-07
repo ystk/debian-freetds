@@ -20,13 +20,37 @@
 #ifndef SQLFRONT_h
 #define SQLFRONT_h
 
-#include <sybfront.h>
+#include "./sybfront.h"
 
-static const char rcsid_sqlfront_h[] = "$Id: sqlfront.h,v 1.4 2007/08/02 11:32:57 freddy77 Exp $";
+static const char rcsid_sqlfront_h[] = "$Id: sqlfront.h,v 1.6.2.3 2011/07/14 12:17:55 freddy77 Exp $";
 static const void *const no_unused_sqlfront_h_warn[] = { rcsid_sqlfront_h, no_unused_sqlfront_h_warn };
 
 typedef DBPROCESS * PDBPROCESS;
 typedef LOGINREC  * PLOGINREC;
 typedef DBCURSOR  * PDBCURSOR;
+
+typedef       int  *	LPINT;
+typedef       char *	LPSTR;
+#if !defined(PHP_MSSQL_H) || !defined(PHP_MSSQL_API)
+typedef       BYTE *	LPBYTE;
+#endif
+typedef       void *	LPVOID;
+typedef const char *	LPCSTR;
+
+typedef const LPINT          LPCINT;
+#ifndef _LPCBYTE_DEFINED
+#define _LPCBYTE_DEFINED
+typedef const BYTE *         LPCBYTE;
+#endif
+typedef       USHORT *       LPUSHORT;
+typedef const LPUSHORT       LPCUSHORT;
+typedef       DBINT *        LPDBINT;
+typedef const LPDBINT        LPCDBINT;
+typedef       DBBINARY *     LPDBBINARY;
+typedef const LPDBBINARY     LPCDBBINARY;
+typedef       DBDATEREC *    LPDBDATEREC;
+typedef const LPDBDATEREC    LPCDBDATEREC;
+typedef       DBDATETIME *   LPDBDATETIME;
+typedef const LPDBDATETIME   LPCDBDATETIME;
 
 #endif
