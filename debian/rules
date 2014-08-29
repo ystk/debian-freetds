@@ -5,23 +5,12 @@ export DEB_CFLAGS_MAINT_APPEND = -Wall -DDBLIB_UNIMPLEMENTED=1
 DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 
 %:
-	dh $@
+	dh $@ --parallel --with=autoreconf
 
-# The autotools target adds a forced build-time dependency on
-# autotools-dev (for /usr/share/misc/config.*)
-autotools:
-	OLDDATESUB=`./config.sub -t | tr -d - ` || OLDDATESUB=""; \
-	NEWDATESUB=`/usr/share/misc/config.sub -t | tr -d - `; \
-	if [ -z "$$OLDDATESUB" ] || [ "$$OLDDATESUB" -lt "$$NEWDATESUB" ]; \
-	then \
-	   cp -f /usr/share/misc/config.sub config.sub; \
-	fi
-
-override_dh_auto_configure: autotools
+override_dh_auto_configure:
 	dh_auto_configure -- --with-gnu-ld --with-tdsver=4.2 \
 		--with-unixodbc=/usr --sysconfdir=/etc/freetds \
-		--enable-sybase-compat --with-gnutls \
-		CPPFLAGS=-D_REENTRANT CFLAGS="${CFLAGS}"
+		--enable-sybase-compat --with-gnutls --enable-krb5
 
 override_dh_auto_install:
 	dh_auto_install

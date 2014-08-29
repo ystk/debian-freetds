@@ -251,7 +251,7 @@ tds_sysdep_real64_type = @tds_sysdep_real64_type@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
-TXT2MAN = txt2man
+TXT2MAN = $(srcdir)/txt2man
 DOCDIR = doc/freetds-$(VERSION)
 PRODUCT = FreeTDS
 TARGET_DOCDIR = $(DESTDIR)$(datadir)/$(DOCDIR)
@@ -285,7 +285,7 @@ man_MANS = freebcp.1 tsql.1 osql.1 bsqldb.1 bsqlodbc.1 defncopy.1 datacopy.1 fis
 		  freetds.conf.5
 
 noinst_DATA = $(DOCDIR)/reference/index.html $(DOCDIR)/userguide/index.htm
-MANOPTS = -I 'FreeTDS User Guide'  -v 'FreeTDS Utilities' -p -r $(VERSION)
+MANOPTS = -I 'FreeTDS User Guide'  -v 'FreeTDS Utilities' -t $(PRODUCT) -r $(VERSION)
 DISTRIBUTED_UG_DIR = $(srcdir)/$(DOCDIR)/userguide
 DISTRIBUTED_REF_DIR = $(srcdir)/$(DOCDIR)/reference
 MSDN_ODBC = http://msdn.microsoft.com/library/en-us/odbc/htm/odbc

@@ -3,11 +3,18 @@ Section: libs
 Priority: optional
 Maintainer: Steve Langasek <vorlon@debian.org>
 Uploaders: Adam Conrad <adconrad@0c3.net>
-Standards-Version: 3.9.2
+Standards-Version: 3.9.4
 Homepage: http://www.freetds.org/
 Vcs-Bzr: nosmart+http://bzr.debian.org/bzr/users/vorlon/freetds/trunk/
 Vcs-Browser: http://anonscm.debian.org/loggerhead/users/vorlon/freetds/trunk/
-Build-Depends: debhelper (>= 8.9.4~), autotools-dev, unixodbc-dev (>= 2.2.11-10), libglib2.0-dev | libglib-dev, libgnutls-dev, libreadline-dev
+Build-Depends: debhelper (>= 9),
+	autotools-dev,
+	unixodbc-dev (>= 2.2.11-10),
+	libglib2.0-dev | libglib-dev,
+	libgnutls28-dev,
+	libreadline-dev,
+	libkrb5-dev,
+	dh-autoreconf
 
 Package: freetds-common
 Architecture: all
@@ -52,7 +59,7 @@ Depends: ${shlibs:Depends}, ${misc:Depends}, freetds-common
 Recommends: libodbc1
 Conflicts: freetds0, libct0, unixodbc (<< 2.1.1-2)
 Replaces: freetds0, libct0, libct1
-Breaks: unixodbc (<< 2.2.14p2-3), odbcinst1debian2 (<< 2.2.14p2-3), libiodbc2 (<< 3.52.7-2+deb7u1)
+Breaks: unixodbc (<< 2.2.14p2-3), odbcinst1debian2 (<< 2.2.14p2-3), libiodbc2 (<< 3.52.7-3~)
 Description: ODBC driver for connecting to MS SQL and Sybase SQL servers
  FreeTDS is an implementation of the Tabular DataStream protocol, used for
  connecting to MS SQL and Sybase servers over TCP/IP.

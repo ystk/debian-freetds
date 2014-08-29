@@ -94,11 +94,13 @@
 #include <assert.h>
 
 #ifdef HAVE_GNUTLS
+#include <gnutls/gnutls.h>
 #if defined(_THREAD_SAFE) && defined(TDS_HAVE_PTHREAD_MUTEX)
 #include "tdsthread.h"
+#if GNUTLS_VERSION_NUMBER <= 0x020b00
 #include <gcrypt.h>
 #endif
-#include <gnutls/gnutls.h>
+#endif
 #elif defined(HAVE_OPENSSL)
 #include <openssl/ssl.h>
 #endif
@@ -1268,7 +1270,7 @@ tds_tls_deinit(void)
 }
 #endif
 
-#if defined(_THREAD_SAFE) && defined(TDS_HAVE_PTHREAD_MUTEX)
+#if defined(_THREAD_SAFE) && defined(TDS_HAVE_PTHREAD_MUTEX) && GNUTLS_VERSION_NUMBER <= 0x020b00
 GCRY_THREAD_OPTION_PTHREAD_IMPL;
 #define tds_gcry_init() gcry_control(GCRYCTL_SET_THREAD_CBS, &gcry_threads_pthread)
 #else
